@@ -28,6 +28,8 @@ export const AgentKanbanView: React.FC = () => {
   const {
     currentAgent,
     tickets,
+    visibleTickets,
+    currentUserRole,
     updateTicketPhase,
     setSelectedTicket,
     setActiveView,
@@ -41,8 +43,12 @@ export const AgentKanbanView: React.FC = () => {
   const [filterDepartment, setFilterDepartment] = useState<string>('all');
   const [filterScope, setFilterScope] = useState<'my_tickets' | 'all_dept'>('my_tickets');
 
-  // Filter tickets according to current attendant
-  const agentTickets = tickets.filter((t) => {
+  // Filter tickets according to current role & attendant
+  const agentTickets = visibleTickets.filter((t) => {
+    if (currentUserRole === 'atendente') {
+      return t.assignedAgentId === currentAgent.id;
+    }
+
     const isAssignedToMe = t.assignedAgentId === currentAgent.id;
     const isInMyDepts = departments
       .filter((d) => currentAgent.departments.includes(d.name))
