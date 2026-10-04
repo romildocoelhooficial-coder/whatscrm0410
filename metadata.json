@@ -1,0 +1,6 @@
+{
+  "name": "OmniPulse CRM Omnichannel",
+  "description": "CRM omnichannel com automação de funil comercial, gestão de múltiplos departamentos, integração WhatsApp Evolution, Uazapi e Meta Cloud API Oficial, IA para atendimento e gestão multi-tenant com Super Admin.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
