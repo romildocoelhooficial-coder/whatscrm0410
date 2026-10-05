@@ -19,10 +19,12 @@ export const AgentModal: React.FC = () => {
     addAgent,
     updateAgent,
     departments,
+    currentTenant,
   } = useCRM();
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('atendente123');
   const [phone, setPhone] = useState('+55 11 ');
   const [role, setRole] = useState<AgentRole>('Operador Sênior');
   const [shift, setShift] = useState('Turno 09:00 - 18:00');
@@ -34,6 +36,7 @@ export const AgentModal: React.FC = () => {
     if (editingAgent) {
       setName(editingAgent.name);
       setEmail(editingAgent.email);
+      setPassword(editingAgent.password || 'atendente123');
       setPhone(editingAgent.phone);
       setRole(editingAgent.role);
       setShift(editingAgent.shift);
@@ -42,6 +45,7 @@ export const AgentModal: React.FC = () => {
     } else {
       setName('');
       setEmail('');
+      setPassword('atendente123');
       setPhone('+55 11 9');
       setRole('Operador Sênior');
       setShift('Turno 09:00 - 18:00');
@@ -77,6 +81,7 @@ export const AgentModal: React.FC = () => {
       const res = updateAgent(editingAgent.id, {
         name,
         email,
+        password: password || 'atendente123',
         phone,
         role,
         shift,
@@ -92,6 +97,7 @@ export const AgentModal: React.FC = () => {
       const res = addAgent({
         name,
         email,
+        password: password || 'atendente123',
         phone,
         avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=160&q=80',
         role,
@@ -122,11 +128,14 @@ export const AgentModal: React.FC = () => {
       <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95 text-xs">
         <div className="flex items-center justify-between pb-3 border-b border-slate-100">
           <div>
+            <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 bg-emerald-50 border border-emerald-200 inline-block px-2 py-0.5 rounded mb-1">
+              Empresa: {currentTenant?.name}
+            </div>
             <h2 className="text-base font-bold text-slate-900">
-              {editingAgent ? 'Editar Atendente / Operador' : 'Novo Atendente & Permissões'}
+              {editingAgent ? 'Editar Atendente da Empresa' : 'Novo Atendente da Empresa'}
             </h2>
             <p className="text-slate-500 mt-0.5">
-              Alocação master e parametrização de concorrência de atendimento
+              Cadastro de operador exclusivo com credenciais de login para {currentTenant?.name}
             </p>
           </div>
           <button
@@ -158,18 +167,33 @@ export const AgentModal: React.FC = () => {
         )}
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-3.5">
-          <div>
-            <label className="block text-slate-700 font-semibold mb-1">
-              Nome Completo *
-            </label>
-            <input
-              type="text"
-              required
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Ex: Mariana Silva"
-              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-800 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-            />
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-slate-700 font-semibold mb-1">
+                Nome Completo *
+              </label>
+              <input
+                type="text"
+                required
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Ex: Mariana Silva"
+                className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-800 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              />
+            </div>
+            <div>
+              <label className="block text-slate-700 font-semibold mb-1">
+                Senha de Login do Atendente *
+              </label>
+              <input
+                type="text"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Ex: atendente123"
+                className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-800 font-mono focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              />
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3">

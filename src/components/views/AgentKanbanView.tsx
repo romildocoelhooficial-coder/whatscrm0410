@@ -27,44 +27,44 @@ const phases: { id: ChatPhase; label: string; desc: string; color: string; bg: s
 export const AgentKanbanView: React.FC = () => {
   const {
     currentAgent,
-    tickets,
     visibleTickets,
-    currentUserRole,
+    canViewAllDepartmentsAndTickets,
     updateTicketPhase,
+    assignTicketToAgent,
     setSelectedTicket,
     setActiveView,
     toggleAgentStatus,
     departments,
+    visibleDepartments,
+    agents,
     setIsScheduleModalOpen,
     setScheduleTargetLead,
     triggerAiFallbackForTicket,
   } = useCRM();
 
   const [filterDepartment, setFilterDepartment] = useState<string>('all');
-  const [filterScope, setFilterScope] = useState<'my_tickets' | 'all_dept'>('my_tickets');
+  const [filterAgentId, setFilterAgentId] = useState<string>('all');
+  const [filterScope, setFilterScope] = useState<'my_tickets' | 'all_dept'>('all_dept');
 
-  // Filter tickets according to current role & attendant
+  // Strict RBAC Filtering:
+  // - Atendente N1 (and non-Senior/non-Admin): ONLY sees their own assigned atendimentos (t.assignedAgentId === currentAgent.id)
+  // - Operador Sênior & Admin: can see ALL departments and ALL atendimentos
   const agentTickets = visibleTickets.filter((t) => {
-    if (currentUserRole === 'atendente') {
+    if (!canViewAllDepartmentsAndTickets) {
       return t.assignedAgentId === currentAgent.id;
     }
 
     const isAssignedToMe = t.assignedAgentId === currentAgent.id;
-    const isInMyDepts = departments
-      .filter((d) => currentAgent.departments.includes(d.name))
-      .some((d) => d.id === t.departmentId);
-
-    const matchesScope =
-      filterScope === 'my_tickets'
-        ? isAssignedToMe || (!t.assignedAgentId && isInMyDepts)
-        : true;
-
+    const matchesScope = filterScope === 'my_tickets' ? isAssignedToMe : true;
     const matchesDept = filterDepartment === 'all' || t.departmentId === filterDepartment;
+    const matchesAgent = filterAgentId === 'all' || t.assignedAgentId === filterAgentId;
 
-    return matchesScope && matchesDept;
+    return matchesScope && matchesDept && matchesAgent;
   });
 
-  const activeCount = agentTickets.filter((t) => t.phase !== 'resolvido').length;
+  const myOwnTicketsCount = visibleTickets.filter(
+    (t) => t.assignedAgentId === currentAgent.id
+  ).length;
   const slaAlertCount = agentTickets.filter((t) => t.slaExceeded && t.phase !== 'resolvido').length;
 
   return (
@@ -90,20 +90,41 @@ export const AgentKanbanView: React.FC = () => {
           </div>
 
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h1 className="text-xl font-bold text-slate-900">{currentAgent.name}</h1>
-              <span className="text-[11px] bg-slate-900 text-white font-semibold px-2 py-0.5 rounded-full">
+              <span
+                className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full ${
+                  canViewAllDepartmentsAndTickets
+                    ? 'bg-emerald-700 text-white'
+                    : 'bg-blue-700 text-white'
+                }`}
+              >
                 {currentAgent.role}
               </span>
+              {canViewAllDepartmentsAndTickets ? (
+                <span className="text-[10px] bg-emerald-50 text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded-full font-bold">
+                  🌐 Acesso Total: Todos os Departamentos e Atendimentos
+                </span>
+              ) : (
+                <span className="text-[10px] bg-blue-50 text-blue-800 border border-blue-200 px-2 py-0.5 rounded-full font-bold">
+                  🔒 Acesso Restrito: Somente Meus Próprios Atendimentos
+                </span>
+              )}
             </div>
             <div className="text-xs text-slate-500 mt-0.5 flex items-center gap-2 flex-wrap">
               <span>{currentAgent.shift}</span>
               <span>•</span>
               <span className="font-mono text-slate-700">{currentAgent.phone}</span>
               <span>•</span>
-              <span className="text-emerald-700 font-medium">
-                Departamentos: {currentAgent.departments.slice(0, 3).join(', ')}
-              </span>
+              {canViewAllDepartmentsAndTickets ? (
+                <span className="text-emerald-700 font-medium">
+                  Todos os Departamentos Liberados ({departments.map((d) => d.name).join(', ')})
+                </span>
+              ) : (
+                <span className="text-blue-700 font-medium">
+                  Escopo Individual: Apenas Atendimentos Atribuídos a {currentAgent.name}
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -148,7 +169,7 @@ export const AgentKanbanView: React.FC = () => {
           <div className="px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs">
             <div className="text-[10px] text-slate-400 uppercase font-semibold">Minha Carga</div>
             <div className="font-mono font-bold text-slate-800">
-              {currentAgent.activeChats} / {currentAgent.maxChats} Chats
+              {myOwnTicketsCount} / {currentAgent.maxChats} Chats
             </div>
           </div>
         </div>
@@ -156,27 +177,38 @@ export const AgentKanbanView: React.FC = () => {
 
       {/* Filter Scope Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setFilterScope('my_tickets')}
-            className={`px-3 py-1.5 rounded-lg font-medium transition-all ${
-              filterScope === 'my_tickets'
-                ? 'bg-emerald-600 text-white font-semibold shadow-xs'
-                : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
-            }`}
-          >
-            Meus Atendimentos ({activeCount})
-          </button>
-          <button
-            onClick={() => setFilterScope('all_dept')}
-            className={`px-3 py-1.5 rounded-lg font-medium transition-all ${
-              filterScope === 'all_dept'
-                ? 'bg-emerald-600 text-white font-semibold shadow-xs'
-                : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
-            }`}
-          >
-            Todos da Central ({tickets.length})
-          </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          {canViewAllDepartmentsAndTickets ? (
+            <>
+              <button
+                onClick={() => setFilterScope('all_dept')}
+                className={`px-3 py-1.5 rounded-lg font-medium transition-all ${
+                  filterScope === 'all_dept'
+                    ? 'bg-emerald-600 text-white font-semibold shadow-xs'
+                    : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                🌐 Todos os Atendimentos & Departamentos ({visibleTickets.length})
+              </button>
+              <button
+                onClick={() => setFilterScope('my_tickets')}
+                className={`px-3 py-1.5 rounded-lg font-medium transition-all ${
+                  filterScope === 'my_tickets'
+                    ? 'bg-emerald-600 text-white font-semibold shadow-xs'
+                    : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                👤 Meus Atendimentos ({myOwnTicketsCount})
+              </button>
+            </>
+          ) : (
+            <div className="px-3.5 py-2 bg-blue-50 border border-blue-200 text-blue-900 rounded-xl font-bold flex items-center gap-2">
+              <Shield className="w-4 h-4 text-blue-600" />
+              <span>
+                🔒 Visão Exclusiva ({currentAgent.role}): Exibindo somente seus próprios atendimentos ({agentTickets.length})
+              </span>
+            </div>
+          )}
 
           {slaAlertCount > 0 && (
             <span className="flex items-center gap-1 text-[11px] bg-rose-50 text-rose-700 border border-rose-200 px-2.5 py-1 rounded-lg font-semibold">
@@ -186,18 +218,36 @@ export const AgentKanbanView: React.FC = () => {
           )}
         </div>
 
-        <select
-          value={filterDepartment}
-          onChange={(e) => setFilterDepartment(e.target.value)}
-          className="py-1.5 px-3 bg-white border border-slate-200 rounded-lg text-slate-700 focus:outline-none"
-        >
-          <option value="all">Filtrar por Departamento</option>
-          {departments.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.name}
-            </option>
-          ))}
-        </select>
+        {/* Department & Agent Filters: ONLY visible to Operador Sênior and Admin */}
+        {canViewAllDepartmentsAndTickets && (
+          <div className="flex items-center gap-2 flex-wrap">
+            <select
+              value={filterDepartment}
+              onChange={(e) => setFilterDepartment(e.target.value)}
+              className="py-1.5 px-3 bg-white border border-slate-200 rounded-lg text-slate-700 font-medium focus:outline-none"
+            >
+              <option value="all">Todos os Departamentos ({departments.length})</option>
+              {departments.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+
+            <select
+              value={filterAgentId}
+              onChange={(e) => setFilterAgentId(e.target.value)}
+              className="py-1.5 px-3 bg-white border border-slate-200 rounded-lg text-slate-700 font-medium focus:outline-none"
+            >
+              <option value="all">Todos os Atendentes ({agents.length})</option>
+              {agents.map((ag) => (
+                <option key={ag.id} value={ag.id}>
+                  {ag.name} ({ag.role})
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       {/* Kanban Board of Attendant Phases */}
@@ -239,15 +289,15 @@ export const AgentKanbanView: React.FC = () => {
                           <span className="font-mono text-[10px] font-bold text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200">
                             {ticket.protocol}
                           </span>
-                          <span
-                            className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${
-                              ticket.originEngine === 'evolution'
-                                ? 'bg-emerald-50 text-emerald-700'
-                                : 'bg-indigo-50 text-indigo-700'
-                            }`}
-                          >
-                            {ticket.originEngine === 'evolution' ? 'Evolution' : 'Uazapi'}
-                          </span>
+                          {ticket.originChannel === 'chat' || ticket.originEngine === 'web_chat' ? (
+                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200">
+                              💬 Origem: Chat
+                            </span>
+                          ) : (
+                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                              📱 Origem: WhatsApp
+                            </span>
+                          )}
                         </div>
 
                         {/* Contact details */}
@@ -268,16 +318,44 @@ export const AgentKanbanView: React.FC = () => {
                         </div>
 
                         {/* Dept Badge */}
-                        <div className="mt-2 flex items-center justify-between">
-                          <span className="text-[10px] bg-slate-100 text-slate-700 px-2 py-0.5 rounded font-medium">
+                        <div className="mt-2 flex items-center justify-between gap-1">
+                          <span className="text-[10px] bg-slate-100 text-slate-700 px-2 py-0.5 rounded font-medium truncate">
                             {dept?.name || 'Comercial'}
                           </span>
 
                           {ticket.slaExceeded && (
-                            <span className="text-[10px] text-rose-600 font-semibold flex items-center gap-1">
+                            <span className="text-[10px] text-rose-600 font-semibold flex items-center gap-1 shrink-0">
                               <AlertTriangle className="w-3 h-3" />
                               Transbordo
                             </span>
+                          )}
+                        </div>
+
+                        {/* Assigned Attendant (Selectable by Operador Sênior & Admin, Read-only for N1) */}
+                        <div className="mt-2">
+                          {canViewAllDepartmentsAndTickets ? (
+                            <select
+                              value={ticket.assignedAgentId || ''}
+                              onChange={(e) =>
+                                assignTicketToAgent(
+                                  ticket.id,
+                                  e.target.value ? e.target.value : null
+                                )
+                              }
+                              className="w-full text-[10px] font-semibold py-1 px-1.5 rounded bg-emerald-50/70 border border-emerald-200 text-emerald-950 focus:outline-none"
+                              title="Atribuir atendimento para um atendente"
+                            >
+                              <option value="">⏳ Fila Geral (Sem Atendente)</option>
+                              {agents.map((ag) => (
+                                <option key={ag.id} value={ag.id}>
+                                  🎧 {ag.name} ({ag.role})
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <div className="text-[10px] font-semibold py-1 px-2 rounded bg-blue-50 border border-blue-200 text-blue-900 truncate">
+                              🎧 Atendente: {currentAgent.name} ({currentAgent.role})
+                            </div>
                           )}
                         </div>
 

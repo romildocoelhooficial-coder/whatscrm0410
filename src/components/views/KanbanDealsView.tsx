@@ -29,9 +29,11 @@ const stages: { id: DealStage; label: string; color: string; bg: string }[] = [
 
 export const KanbanDealsView: React.FC = () => {
   const {
-    deals,
+    visibleDeals,
     departments,
     agents,
+    currentAgent,
+    canViewAllDepartmentsAndTickets,
     updateDealStage,
     addDeal,
     deleteDeal,
@@ -53,15 +55,21 @@ export const KanbanDealsView: React.FC = () => {
   const [newValue, setNewValue] = useState('25000');
   const [newStage, setNewStage] = useState<DealStage>('lead_inbound');
   const [newDeptId, setNewDeptId] = useState('dept-02');
-  const [newAgentId, setNewAgentId] = useState(agents[0]?.id || '');
+  const [newAgentId, setNewAgentId] = useState(currentAgent?.id || agents[0]?.id || '');
 
-  // Filter deals
-  const filteredDeals = deals.filter((d) => {
+  // Filter deals according to RBAC:
+  // - Atendente N1: ONLY sees their own assigned deals/atendimentos
+  // - Operador Sênior & Admin: see all departments and all deals
+  const filteredDeals = visibleDeals.filter((d) => {
     const matchesSearch =
       d.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
       d.contactName.toLowerCase().includes(searchQuery.toLowerCase()) ||
       d.companyName.toLowerCase().includes(searchQuery.toLowerCase()) ||
       d.contactPhone.includes(searchQuery);
+
+    if (!canViewAllDepartmentsAndTickets) {
+      return d.assignedAgentId === currentAgent.id && matchesSearch;
+    }
 
     const matchesDept = selectedDept === 'all' || d.departmentId === selectedDept;
     const matchesAgent = selectedAgent === 'all' || d.assignedAgentId === selectedAgent;
@@ -86,7 +94,7 @@ export const KanbanDealsView: React.FC = () => {
       value: parseFloat(newValue) || 10000,
       stage: newStage,
       departmentId: newDeptId,
-      assignedAgentId: newAgentId,
+      assignedAgentId: canViewAllDepartmentsAndTickets ? newAgentId : currentAgent.id,
       priority: 'high',
       lastInteraction: 'Oportunidade inserida manualmente no funil',
       tags: ['Comercial', 'Inbound'],
@@ -147,40 +155,48 @@ export const KanbanDealsView: React.FC = () => {
 
       {/* Filter Bar */}
       <div className="bg-white border border-slate-200 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 shadow-2xs text-xs">
-        <div className="flex items-center gap-3 flex-wrap">
-          <div className="flex items-center gap-1.5 text-slate-500">
-            <Filter className="w-3.5 h-3.5" />
-            <span>Filtros:</span>
+        {canViewAllDepartmentsAndTickets ? (
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-1.5 text-emerald-700 font-bold bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg">
+              <Filter className="w-3.5 h-3.5" />
+              <span>🌐 Visão Completa ({currentAgent.role}): Todos os Departamentos e Atendimentos</span>
+            </div>
+
+            <select
+              value={selectedDept}
+              onChange={(e) => setSelectedDept(e.target.value)}
+              className="py-1 px-2.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-medium focus:outline-none"
+            >
+              <option value="all">Todos os Departamentos ({departments.length})</option>
+              {departments.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+
+            <select
+              value={selectedAgent}
+              onChange={(e) => setSelectedAgent(e.target.value)}
+              className="py-1 px-2.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-medium focus:outline-none"
+            >
+              <option value="all">Todos os Atendentes ({agents.length})</option>
+              {agents.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name} ({a.role})
+                </option>
+              ))}
+            </select>
           </div>
+        ) : (
+          <div className="flex items-center gap-2 text-blue-900 font-bold bg-blue-50 border border-blue-200 px-3 py-1.5 rounded-lg">
+            <span>
+              🔒 Visão Exclusiva ({currentAgent.role} — {currentAgent.name}): Exibindo somente seus próprios atendimentos e negócios
+            </span>
+          </div>
+        )}
 
-          <select
-            value={selectedDept}
-            onChange={(e) => setSelectedDept(e.target.value)}
-            className="py-1 px-2.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:outline-none"
-          >
-            <option value="all">Todos os Departamentos</option>
-            {departments.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name}
-              </option>
-            ))}
-          </select>
-
-          <select
-            value={selectedAgent}
-            onChange={(e) => setSelectedAgent(e.target.value)}
-            className="py-1 px-2.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:outline-none"
-          >
-            <option value="all">Todos os Atendentes</option>
-            {agents.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name} ({a.role})
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="text-slate-400">
+        <div className="text-slate-500 font-medium">
           Exibindo <strong>{filteredDeals.length}</strong> negociações ativas
         </div>
       </div>
@@ -435,17 +451,23 @@ export const KanbanDealsView: React.FC = () => {
                   <label className="block text-slate-700 font-medium mb-1">
                     Atendente Responsável
                   </label>
-                  <select
-                    value={newAgentId}
-                    onChange={(e) => setNewAgentId(e.target.value)}
-                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:outline-none"
-                  >
-                    {agents.map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.name} ({a.role})
-                      </option>
-                    ))}
-                  </select>
+                  {canViewAllDepartmentsAndTickets ? (
+                    <select
+                      value={newAgentId}
+                      onChange={(e) => setNewAgentId(e.target.value)}
+                      className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:outline-none"
+                    >
+                      {agents.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.name} ({a.role})
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="w-full p-2 bg-blue-50 border border-blue-200 rounded-lg text-blue-900 font-bold">
+                      {currentAgent.name} ({currentAgent.role})
+                    </div>
+                  )}
                 </div>
               </div>
 

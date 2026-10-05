@@ -165,46 +165,30 @@ export const AdminMasterView: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
-  if (currentUserRole === 'atendente') {
-    return (
-      <div className="p-8 max-w-xl mx-auto my-12 text-center bg-white rounded-3xl border border-slate-200 p-8 space-y-4 shadow-sm">
-        <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-600 mx-auto flex items-center justify-center">
-          <ShieldCheck className="w-6 h-6" />
-        </div>
-        <h2 className="text-lg font-bold text-slate-900">Acesso Restrito ao Administrador Master</h2>
-        <p className="text-xs text-slate-500 leading-relaxed">
-          Esta área é destinada exclusivamente à gestão de departamentos, atendentes e configuração das linhas de WhatsApp da empresa. Como atendente, utilize a aba <strong>Meus Atendimentos</strong> ou <strong>Kanban do Atendente</strong> para atender seus clientes.
-        </p>
-        <button
-          onClick={() => setActiveView('inbox')}
-          className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-colors"
-        >
-          Ir para Meus Atendimentos
-        </button>
-      </div>
-    );
-  }
-
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-6 animate-in fade-in duration-200">
-      {/* Top Banner and Header */}
+      {/* Top Banner and Header with Company Brand Logo & Name */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-            <span className="text-[10px] font-bold uppercase tracking-wider bg-slate-100 text-slate-800 px-2 py-0.5 rounded border border-slate-200">
-              Painel Corporativo
-            </span>
-            <span className="flex items-center gap-1 text-[11px] text-emerald-600 font-medium">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              Failover Automático Ativo
-            </span>
-            <span className="text-[11px] text-slate-400 font-mono">
-              UUID: c83f-42ae-9901
-            </span>
+        <div className="flex items-start gap-3.5">
+          <div className="w-12 h-12 rounded-2xl bg-slate-900 text-emerald-400 flex items-center justify-center shrink-0 shadow-md border border-slate-800 mt-0.5">
+            <Radio className="w-6 h-6" />
           </div>
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
-            Gestão Administrativa & Conexões Omnichannel
-          </h1>
+          <div>
+            <div className="flex items-center gap-2 mb-1 flex-wrap">
+              <span className="text-[10px] font-extrabold uppercase tracking-wider bg-emerald-100 text-emerald-900 px-2.5 py-0.5 rounded-full border border-emerald-300">
+                Empresa: {currentTenant?.name}
+              </span>
+              <span className="flex items-center gap-1 text-[11px] text-emerald-600 font-medium">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                Failover Automático Ativo
+              </span>
+              <span className="text-[11px] text-slate-400 font-mono">
+                Slug: /?empresa={currentTenant?.slug || currentTenant?.id}
+              </span>
+            </div>
+            <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">
+              {currentTenant?.name || 'Gestão Administrativa'} — Equipe & CRUD de Atendentes
+            </h1>
           <div className="mt-1 flex items-center gap-3 text-xs text-slate-500 flex-wrap">
             <div className="flex items-center gap-1.5 text-slate-700 font-medium">
               <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
@@ -259,10 +243,20 @@ export const AdminMasterView: React.FC = () => {
               Latência Média: <strong>21ms</strong>
             </span>
           </div>
+          </div>
         </div>
 
         {/* Master Actions */}
         <div className="flex items-center gap-2.5 flex-wrap">
+          <button
+            onClick={() => setActiveView('gadget')}
+            className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-sm transition-all"
+            title="Abrir Gadget e Formulário Web com código exclusivo desta empresa"
+          >
+            <Sparkles className="w-4 h-4" />
+            Gadget & Formulário Web da Empresa
+          </button>
+
           <button
             onClick={() => openQrCodeForActivation()}
             className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-sm transition-all animate-pulse"
@@ -846,20 +840,30 @@ export const AdminMasterView: React.FC = () => {
         </div>
       </div>
 
-      {/* Quadro de Atendentes & Operadores (Matching screenshot) */}
+      {/* Quadro de Atendentes & Operadores da Empresa */}
       <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-2xs space-y-4">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h2 className="font-bold text-slate-900 text-sm">
-                Quadro de Atendentes & Operadores
+                Gestão de Equipe & CRUD de Atendentes — {currentTenant?.name}
               </h2>
-              <span className="text-xs bg-slate-100 text-slate-700 font-semibold px-2 py-0.5 rounded-full border border-slate-200">
-                {agents.length} Colaboradores
+              <span className="text-xs bg-emerald-100 text-emerald-800 font-bold px-2.5 py-0.5 rounded-full border border-emerald-200">
+                {agents.length} Atendentes da Empresa
               </span>
+              <button
+                onClick={() => {
+                  setEditingAgent(null);
+                  setIsAgentModalOpen(true);
+                }}
+                className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[11px] font-bold flex items-center gap-1 transition-colors shadow-2xs"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Cadastrar Atendente</span>
+              </button>
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
-              Gerenciamento granular de acessos, alocação tripla e capacidade de chat simultâneo
+              Cadastre, edite senhas de acesso, defina departamentos e gerencie exclusivamente os atendentes da empresa <strong>{currentTenant?.name}</strong>
             </p>
           </div>
 

@@ -515,17 +515,45 @@ export const SuperAdminView: React.FC = () => {
                       <span>Abrir Portal de Login da Empresa</span>
                     </button>
                   </div>
+                  {/* Exclusive Company Features: Team CRUD & Company Gadget/Web Form */}
+                  <div className="mt-3 pt-2.5 border-t border-slate-100 grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        switchTenant(t.id);
+                        setActiveView('admin');
+                      }}
+                      className="py-2 px-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-950 border border-emerald-200 rounded-xl text-[10px] font-extrabold flex items-center justify-center gap-1.5 transition-colors"
+                      title="Abrir Gestão de Equipe & CRUD dos Atendentes exclusivos desta empresa"
+                    >
+                      <Users2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      <span className="truncate">Equipe & CRUD Atendentes</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        switchTenant(t.id);
+                        setActiveView('gadget');
+                      }}
+                      className="py-2 px-2.5 bg-blue-50 hover:bg-blue-100 text-blue-950 border border-blue-200 rounded-xl text-[10px] font-extrabold flex items-center justify-center gap-1.5 transition-colors"
+                      title="Abrir Gadget e Formulário Web com código habilitado somente para esta empresa"
+                    >
+                      <Zap className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                      <span className="truncate">Gadget & Form (Empresa)</span>
+                    </button>
+                  </div>
                 </div>
 
                 {/* Actions */}
-                <div className="mt-4 pt-3 border-t border-slate-100 flex items-center gap-2">
+                <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-2">
                   <button
                     onClick={() => handleImpersonateTenant(t)}
                     className="flex-1 py-2 px-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-colors shadow-2xs"
                     title="Acessar o painel completo deste Admin Master"
                   >
                     <Eye className="w-3.5 h-3.5" />
-                    Gerenciar Painel
+                    Painel Admin da Empresa
                   </button>
 
                   <button

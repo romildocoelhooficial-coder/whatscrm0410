@@ -107,7 +107,8 @@ export interface ChatTicket {
   aiHandled: boolean;
   waitingTimeSeconds: number;
   slaExceeded: boolean;
-  originEngine: 'evolution' | 'uazapi' | 'meta_cloud';
+  originEngine: 'evolution' | 'uazapi' | 'meta_cloud' | 'web_chat';
+  originChannel?: 'whatsapp' | 'chat';
 }
 
 export type WhatsAppEngine = 'evolution' | 'uazapi' | 'meta_cloud';

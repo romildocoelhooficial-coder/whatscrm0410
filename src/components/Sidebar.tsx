@@ -22,8 +22,9 @@ export const Sidebar: React.FC = () => {
   const {
     activeView,
     setActiveView,
-    tickets,
-    deals,
+    visibleTickets,
+    visibleDeals,
+    canViewAllDepartmentsAndTickets,
     gatewayConfig,
     setIsGatewayModalOpen,
     currentAgent,
@@ -36,9 +37,9 @@ export const Sidebar: React.FC = () => {
     currentTenant,
   } = useCRM();
 
-  const totalDealValue = deals.reduce((acc, d) => acc + d.value, 0);
+  const totalDealValue = visibleDeals.reduce((acc, d) => acc + d.value, 0);
   const formattedDealsValue = `R$ ${Math.round(totalDealValue / 1000)}k`;
-  const unreadTicketsCount = tickets.reduce((acc, t) => acc + (t.unreadCount || 0), 0) || 18;
+  const unreadTicketsCount = visibleTickets.length;
 
   const isEvo = gatewayConfig.activeEngine === 'evolution';
 
@@ -57,11 +58,11 @@ export const Sidebar: React.FC = () => {
       icon: ShieldCheck,
       badge: 'SaaS',
       badgeColor: 'bg-purple-100 text-purple-700 font-bold text-[10px]',
-      roleRequired: 'admin',
+      roleRequired: 'superadmin',
     },
     {
       id: 'inbox',
-      label: currentUserRole === 'atendente' ? 'Meus Atendimentos' : 'Inbox Multiatendimento',
+      label: canViewAllDepartmentsAndTickets ? 'Inbox Multiatendimento' : 'Meus Atendimentos',
       icon: MessageSquare,
       badge: `${unreadTicketsCount}`,
       badgeColor: 'bg-emerald-500 text-white',
@@ -122,24 +123,32 @@ export const Sidebar: React.FC = () => {
     if (currentUserRole === 'atendente') {
       return !item.roleRequired;
     }
-    return true; // Superadmin and Admin Master see all administrative items
+    if (currentUserRole === 'admin') {
+      return item.roleRequired !== 'superadmin';
+    }
+    return true; // Superadmin sees all items
   });
 
   return (
     <aside className="w-64 bg-slate-900 text-slate-300 flex flex-col shrink-0 h-screen sticky top-0 z-40 border-r border-slate-800">
-      {/* Brand Header */}
+      {/* Brand Header: Displays the Company Name in the Logo Spot */}
       <div className="p-4 border-b border-slate-800/80 flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-emerald-500 flex items-center justify-center text-slate-950 font-black shadow-md shadow-emerald-500/20">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="w-9 h-9 rounded-xl bg-emerald-500 flex items-center justify-center text-slate-950 font-black shadow-md shadow-emerald-500/20 shrink-0">
             <Radio className="w-4 h-4 text-white" />
           </div>
-          <div>
-            <div className="font-extrabold text-white text-sm tracking-tight flex items-center gap-1.5">
-              OmniPulse
-              <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+          <div className="min-w-0">
+            <div
+              className="font-extrabold text-white text-sm tracking-tight flex items-center gap-1.5"
+              title={currentTenant?.name || 'OmniPulse'}
+            >
+              <span className="truncate">{currentTenant?.name || 'OmniPulse'}</span>
+              <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></span>
             </div>
-            <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">
-              CRM OMNICHANNEL
+            <div className="text-[10px] text-emerald-400/90 font-semibold uppercase tracking-wider truncate">
+              {currentUserRole === 'superadmin'
+                ? 'SUPER ADMIN • MULTI-EMPRESAS'
+                : `PAINEL DA EMPRESA • ${currentTenant?.plan || 'CRM'}`}
             </div>
           </div>
         </div>

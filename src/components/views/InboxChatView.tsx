@@ -17,6 +17,9 @@ import {
   RefreshCw,
   MoreVertical,
   Sliders,
+  BellRing,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 import { useCRM } from '../../context/CRMContext';
 import { ChatPhase, ChatTicket } from '../../types/crm';
@@ -24,14 +27,14 @@ import { requestAiFallbackReply } from '../../services/geminiService';
 
 export const InboxChatView: React.FC = () => {
   const {
-    tickets,
     visibleTickets,
-    currentUserRole,
+    canViewAllDepartmentsAndTickets,
     selectedTicket,
     setSelectedTicket,
     sendChatMessage,
     updateTicketPhase,
     transferTicket,
+    assignTicketToAgent,
     triggerAiFallbackForTicket,
     departments,
     agents,
@@ -39,22 +42,39 @@ export const InboxChatView: React.FC = () => {
     setIsScheduleModalOpen,
     setScheduleTargetLead,
     addDeal,
-    triggerConfetti,
+    soundSettings,
+    updateSoundSettings,
+    playAttendanceChime,
+    simulateIncomingAttendanceCall,
   } = useCRM();
 
   const [messageInput, setMessageInput] = useState('');
   const [filterPhase, setFilterPhase] = useState<string>('all');
+  const [filterDepartment, setFilterDepartment] = useState<string>('all');
   const [isAiGenerating, setIsAiGenerating] = useState(false);
 
-  // Attendant isolation: activeTicket is guaranteed to belong to visibleTickets
-  const activeTicket = (selectedTicket && visibleTickets.some((t) => t.id === selectedTicket.id))
-    ? selectedTicket
-    : visibleTickets[0];
+  // Strict RBAC Filtering:
+  // - Atendente N1 (and non-Senior/non-Admin): ONLY sees their own assigned atendimentos (t.assignedAgentId === currentAgent.id)
+  // - Operador Sênior & Admin: see ALL departments and ALL atendimentos
+  const scopedTickets = canViewAllDepartmentsAndTickets
+    ? visibleTickets
+    : visibleTickets.filter((t) => t.assignedAgentId === currentAgent.id);
 
-  const filteredTickets = visibleTickets.filter((t) => {
-    if (filterPhase === 'all') return true;
-    return t.phase === filterPhase;
+  const filteredTickets = scopedTickets.filter((t) => {
+    const matchesPhase = filterPhase === 'all' || t.phase === filterPhase;
+    const matchesDept =
+      !canViewAllDepartmentsAndTickets ||
+      filterDepartment === 'all' ||
+      t.departmentId === filterDepartment;
+    return matchesPhase && matchesDept;
   });
+
+  // Active ticket always resolves from the attendant's allowed tickets
+  const activeTicket =
+    (selectedTicket && filteredTickets.find((t) => t.id === selectedTicket.id)) ||
+    (selectedTicket && scopedTickets.find((t) => t.id === selectedTicket.id)) ||
+    filteredTickets[0] ||
+    scopedTickets[0];
 
   const handleSendMessage = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -105,22 +125,88 @@ export const InboxChatView: React.FC = () => {
         <div className="p-3.5 border-b border-slate-200">
           <div className="flex items-center justify-between mb-2">
             <h2 className="font-bold text-slate-900 text-sm">
-              {currentUserRole === 'atendente' ? 'Meus Atendimentos' : 'Inbox Multiatendimento'}
+              {canViewAllDepartmentsAndTickets ? 'Inbox Multiatendimento' : 'Meus Atendimentos'}
             </h2>
             <span className="text-xs bg-emerald-100 text-emerald-800 font-semibold px-2 py-0.5 rounded-full">
               {filteredTickets.length} Ativos
             </span>
           </div>
 
-          {currentUserRole === 'atendente' ? (
-            <div className="bg-blue-50 border border-blue-200 rounded-xl px-2.5 py-1 text-[10px] text-blue-900 font-medium mb-2">
-              🔒 Visão Restrita: Somente seus chats e departamentos alocados.
+          {!canViewAllDepartmentsAndTickets ? (
+            <div className="bg-blue-50 border border-blue-200 rounded-xl px-2.5 py-1.5 text-[10px] text-blue-900 font-bold mb-2">
+              🔒 Visão Exclusiva ({currentAgent.role}): Somente seus próprios atendimentos ({scopedTickets.length}).
             </div>
           ) : (
-            <div className="bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1 text-[10px] text-slate-600 font-medium mb-2">
-              🌐 Visão Master: Todos os atendimentos da empresa ({tickets.length}).
+            <div className="bg-emerald-50/70 border border-emerald-200 rounded-xl px-2.5 py-1.5 text-[10px] text-emerald-950 font-bold mb-2 space-y-1.5">
+              <div>
+                🌐 Visão Completa ({currentAgent.role}): Todos os departamentos e atendimentos ({scopedTickets.length}).
+              </div>
+              <select
+                value={filterDepartment}
+                onChange={(e) => setFilterDepartment(e.target.value)}
+                className="w-full py-1 px-2 bg-white border border-emerald-200 rounded-lg text-[10px] text-slate-800 font-semibold focus:outline-none"
+              >
+                <option value="all">Todos os Departamentos ({departments.length})</option>
+                {departments.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name}
+                  </option>
+                ))}
+              </select>
             </div>
           )}
+
+          {/* Campainha Sonora Quick Bar for the Attendant */}
+          <div className="bg-emerald-50/80 border border-emerald-200 rounded-xl p-2 mb-2 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-950">
+                <BellRing className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Campainha Sonora</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => playAttendanceChime('chat', 'new_ticket')}
+                  className="px-2 py-0.5 bg-white hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded text-[10px] font-bold transition-colors"
+                  title="Testar toque da campainha agora"
+                >
+                  🔊 Testar Som
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateSoundSettings({ enabled: !soundSettings.enabled })}
+                  className={`p-1 rounded border transition-colors ${
+                    soundSettings.enabled
+                      ? 'bg-emerald-600 text-white border-emerald-600'
+                      : 'bg-slate-200 text-slate-600 border-slate-300'
+                  }`}
+                  title={soundSettings.enabled ? 'Campainha Ativa (Clique p/ silenciar)' : 'Campainha Silenciada'}
+                >
+                  {soundSettings.enabled ? (
+                    <Volume2 className="w-3 h-3" />
+                  ) : (
+                    <VolumeX className="w-3 h-3" />
+                  )}
+                </button>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-1 pt-0.5">
+              <button
+                type="button"
+                onClick={() => simulateIncomingAttendanceCall('chat')}
+                className="py-1 px-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[10px] font-bold transition-colors"
+              >
+                💬 + Pedido Chat
+              </button>
+              <button
+                type="button"
+                onClick={() => simulateIncomingAttendanceCall('whatsapp')}
+                className="py-1 px-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-bold transition-colors"
+              >
+                📱 + Pedido Whats
+              </button>
+            </div>
+          </div>
 
           {/* Phase Filter Tabs */}
           <div className="flex items-center gap-1 overflow-x-auto text-[11px] pb-1">
@@ -194,7 +280,11 @@ export const InboxChatView: React.FC = () => {
                   />
                   <span
                     className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full ring-2 ring-white ${
-                      ticket.originEngine === 'evolution' ? 'bg-emerald-500' : 'bg-indigo-500'
+                      ticket.originChannel === 'chat' || ticket.originEngine === 'web_chat'
+                        ? 'bg-blue-500'
+                        : ticket.originEngine === 'evolution'
+                        ? 'bg-emerald-500'
+                        : 'bg-indigo-500'
                     }`}
                   />
                 </div>
@@ -213,22 +303,35 @@ export const InboxChatView: React.FC = () => {
                     {ticket.lastMessage}
                   </div>
 
-                  <div className="mt-1.5 flex items-center justify-between">
-                    <span className="text-[9px] font-semibold bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded">
-                      {dept?.name || 'Geral'}
-                    </span>
-
-                    {ticket.unreadCount > 0 && (
-                      <span className="w-4 h-4 rounded-full bg-emerald-600 text-white font-bold text-[10px] flex items-center justify-center">
-                        {ticket.unreadCount}
+                  <div className="mt-1.5 flex items-center justify-between gap-1 flex-wrap">
+                    <div className="flex items-center gap-1">
+                      <span className="text-[9px] font-semibold bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded">
+                        {dept?.name || 'Geral'}
                       </span>
-                    )}
+                      {ticket.originChannel === 'chat' || ticket.originEngine === 'web_chat' ? (
+                        <span className="text-[9px] font-bold bg-blue-100 text-blue-700 border border-blue-200 px-1.5 py-0.5 rounded">
+                          💬 Origem: Chat
+                        </span>
+                      ) : (
+                        <span className="text-[9px] font-bold bg-emerald-100 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded">
+                          📱 Origem: WhatsApp
+                        </span>
+                      )}
+                    </div>
 
-                    {ticket.aiHandled && (
-                      <span className="text-[9px] bg-purple-100 text-purple-700 px-1 rounded font-medium">
-                        🤖 IA
-                      </span>
-                    )}
+                    <div className="flex items-center gap-1">
+                      {ticket.unreadCount > 0 && (
+                        <span className="w-4 h-4 rounded-full bg-emerald-600 text-white font-bold text-[10px] flex items-center justify-center">
+                          {ticket.unreadCount}
+                        </span>
+                      )}
+
+                      {ticket.aiHandled && (
+                        <span className="text-[9px] bg-purple-100 text-purple-700 px-1 rounded font-medium">
+                          🤖 IA
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               </button>
@@ -260,6 +363,15 @@ export const InboxChatView: React.FC = () => {
                     <span className="font-mono text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
                       {activeTicket.protocol}
                     </span>
+                    {activeTicket.originChannel === 'chat' || activeTicket.originEngine === 'web_chat' ? (
+                      <span className="text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200 px-2 py-0.5 rounded-full">
+                        💬 Origem: Chat
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded-full">
+                        📱 Origem: WhatsApp
+                      </span>
+                    )}
                   </div>
                   <div className="text-xs text-slate-500 flex items-center gap-2">
                     <span className="font-mono text-emerald-600 font-medium">
@@ -448,30 +560,87 @@ export const InboxChatView: React.FC = () => {
                 <div className="font-mono text-slate-800">{activeTicket.contactPhone}</div>
               </div>
               <div>
+                <span className="text-slate-400 text-[10px] uppercase font-semibold">Canal de Origem</span>
+                <div className="mt-0.5">
+                  {activeTicket.originChannel === 'chat' || activeTicket.originEngine === 'web_chat' ? (
+                    <span className="inline-flex items-center gap-1 font-bold text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-md text-[11px]">
+                      💬 Origem: Chat (Web Chat)
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md text-[11px]">
+                      📱 Origem: WhatsApp
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div>
                 <span className="text-slate-400 text-[10px] uppercase font-semibold">Motor Origem</span>
                 <div className="font-semibold text-emerald-700 uppercase">
-                  {activeTicket.originEngine === 'evolution' ? 'Evolution API v2' : 'Uazapi Cloud'}
+                  {activeTicket.originEngine === 'web_chat'
+                    ? 'Web Chat Ao Vivo'
+                    : activeTicket.originEngine === 'meta_cloud'
+                    ? 'Meta Cloud API Oficial'
+                    : activeTicket.originEngine === 'evolution'
+                    ? 'Evolution API v2'
+                    : 'Uazapi Cloud'}
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Department and Transfer */}
-          <div className="pt-3 border-t border-slate-100">
-            <label className="block text-slate-400 text-[10px] uppercase font-semibold mb-1">
-              Departamento Atual
-            </label>
-            <select
-              value={activeTicket.departmentId}
-              onChange={(e) => transferTicket(activeTicket.id, e.target.value)}
-              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-800 focus:outline-none"
-            >
-              {departments.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.name}
-                </option>
-              ))}
-            </select>
+          {/* Department and Assigned Attendant */}
+          <div className="pt-3 border-t border-slate-100 space-y-3">
+            <div>
+              <label className="block text-slate-400 text-[10px] uppercase font-semibold mb-1">
+                Departamento do Atendimento
+              </label>
+              {canViewAllDepartmentsAndTickets ? (
+                <select
+                  value={activeTicket.departmentId}
+                  onChange={(e) => transferTicket(activeTicket.id, e.target.value)}
+                  className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-800 focus:outline-none"
+                >
+                  {departments.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-800 font-semibold">
+                  {currentDept?.name || 'Atendimento'}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-slate-400 text-[10px] uppercase font-semibold mb-1">
+                Atendente Responsável
+              </label>
+              {canViewAllDepartmentsAndTickets ? (
+                <select
+                  value={activeTicket.assignedAgentId || ''}
+                  onChange={(e) =>
+                    assignTicketToAgent(
+                      activeTicket.id,
+                      e.target.value ? e.target.value : null
+                    )
+                  }
+                  className="w-full p-2 bg-emerald-50/70 border border-emerald-200 rounded-lg text-emerald-950 font-semibold focus:outline-none"
+                >
+                  <option value="">⏳ Fila Geral (Sem Atendente)</option>
+                  {agents.map((ag) => (
+                    <option key={ag.id} value={ag.id}>
+                      {ag.name} ({ag.role})
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div className="w-full p-2 bg-blue-50 border border-blue-200 rounded-lg text-blue-900 font-bold">
+                  {currentAgent.name} ({currentAgent.role})
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Ticket Phase */}

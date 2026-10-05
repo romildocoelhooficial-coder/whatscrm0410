@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import confetti from 'canvas-confetti';
 import {
   Department,
@@ -26,6 +26,18 @@ import {
   initialTenants,
 } from '../data/mockData';
 import { requestAiFallbackReply } from '../services/geminiService';
+import { soundEngine, SoundSettings, SoundPresetId } from '../services/soundService';
+
+export interface IncomingCallAlert {
+  id: string;
+  ticketId: string;
+  contactName: string;
+  contactPhone: string;
+  channel: 'chat' | 'whatsapp';
+  departmentName: string;
+  message: string;
+  protocol: string;
+}
 
 export type AppView = 
   | 'superadmin'
@@ -52,10 +64,13 @@ interface CRMContextType {
   activeView: AppView;
   setActiveView: (view: AppView) => void;
   departments: Department[];
+  visibleDepartments: Department[];
   agents: Agent[];
   deals: Deal[];
+  visibleDeals: Deal[];
   tickets: ChatTicket[];
   visibleTickets: ChatTicket[];
+  canViewAllDepartmentsAndTickets: boolean;
   gatewayConfig: GatewayConfig;
   auditEvents: AuditEvent[];
   aiSettings: AiAgentSettings;
@@ -109,6 +124,7 @@ interface CRMContextType {
     phone: string;
     departmentId: string;
     message: string;
+    channel?: 'whatsapp' | 'chat';
   }) => Promise<string>;
   
   // Department CRUD
@@ -133,6 +149,7 @@ interface CRMContextType {
   sendChatMessage: (ticketId: string, text: string, sender?: 'agent' | 'contact' | 'ai_bot') => Promise<void>;
   updateTicketPhase: (ticketId: string, newPhase: ChatPhase) => void;
   transferTicket: (ticketId: string, targetDeptId: string, targetAgentId?: string | null) => void;
+  assignTicketToAgent: (ticketId: string, agentId: string | null) => void;
   triggerAiFallbackForTicket: (ticketId: string) => Promise<void>;
 
   // Gateway & Failover
@@ -167,6 +184,19 @@ interface CRMContextType {
   whatsappConnectionState: 'connecting' | 'open' | 'close' | 'qrcode';
   setWhatsappConnectionState: (state: 'connecting' | 'open' | 'close' | 'qrcode') => void;
 
+  // Sound Chime & Incoming Attendance Alert
+  soundSettings: SoundSettings;
+  updateSoundSettings: (updates: Partial<SoundSettings>) => void;
+  playAttendanceChime: (
+    channel: 'chat' | 'whatsapp',
+    type?: 'new_ticket' | 'message',
+    presetOverride?: SoundPresetId
+  ) => void;
+  isBellRinging: boolean;
+  incomingCallAlert: IncomingCallAlert | null;
+  dismissIncomingCallAlert: () => void;
+  simulateIncomingAttendanceCall: (channel: 'chat' | 'whatsapp') => Promise<void>;
+
   triggerConfetti: () => void;
 }
 
@@ -181,17 +211,74 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [agents, setAgents] = useState<Agent[]>(() => {
     const saved = localStorage.getItem('omnipulse_agents');
-    return saved ? JSON.parse(saved) : initialAgents;
+    if (saved) {
+      try {
+        const parsed: Agent[] = JSON.parse(saved);
+        // Ensure all initial tenant-specific agents exist and have tenantId
+        const merged = parsed.map((a) => {
+          let updated = a;
+          if (!updated.tenantId) {
+            if (updated.id === 'agent-05' || updated.id === 'agent-06') {
+              updated = { ...updated, tenantId: 'tenant-clinica-saude' };
+            } else {
+              updated = { ...updated, tenantId: 'tenant-omnipulse' };
+            }
+          }
+          if (updated.id === 'agent-04' && updated.role === 'Operador Sênior') {
+            updated = { ...updated, role: 'Atendente N1', status: 'online' };
+          }
+          if (updated.id === 'agent-05' && updated.role === 'Closer Comercial') {
+            updated = { ...updated, role: 'Atendente N1' };
+          }
+          return updated;
+        });
+        for (const initAg of initialAgents) {
+          if (!merged.some((m) => m.id === initAg.id)) {
+            merged.push(initAg);
+          }
+        }
+        return merged;
+      } catch (e) {
+        return initialAgents;
+      }
+    }
+    return initialAgents;
   });
 
   const [deals, setDeals] = useState<Deal[]>(() => {
     const saved = localStorage.getItem('omnipulse_deals');
-    return saved ? JSON.parse(saved) : initialDeals;
+    if (saved) {
+      try {
+        const parsed: Deal[] = JSON.parse(saved);
+        for (const initD of initialDeals) {
+          if (!parsed.some((d) => d.id === initD.id)) {
+            parsed.push(initD);
+          }
+        }
+        return parsed;
+      } catch (e) {
+        return initialDeals;
+      }
+    }
+    return initialDeals;
   });
 
   const [tickets, setTickets] = useState<ChatTicket[]>(() => {
     const saved = localStorage.getItem('omnipulse_tickets');
-    return saved ? JSON.parse(saved) : initialChatTickets;
+    if (saved) {
+      try {
+        const parsed: ChatTicket[] = JSON.parse(saved);
+        for (const initT of initialChatTickets) {
+          if (!parsed.some((t) => t.id === initT.id)) {
+            parsed.push(initT);
+          }
+        }
+        return parsed;
+      } catch (e) {
+        return initialChatTickets;
+      }
+    }
+    return initialChatTickets;
   });
 
   const [gatewayConfig, setGatewayConfig] = useState<GatewayConfig>(() => {
@@ -257,17 +344,98 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return saved ? JSON.parse(saved) : initialAiAgentSettings;
   });
 
-  const [webGadgetConfig, setWebGadgetConfig] = useState<WebGadgetConfig>(() => {
-    const saved = localStorage.getItem('omnipulse_web_gadget');
-    return saved ? JSON.parse(saved) : initialWebGadgetConfig;
+  const [tenantGadgetConfigs, setTenantGadgetConfigs] = useState<Record<string, WebGadgetConfig>>(() => {
+    const saved = localStorage.getItem('omnipulse_tenant_gadgets');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        // fallback
+      }
+    }
+    return {};
   });
+
+  // Sound Chime Settings
+  const [soundSettings, setSoundSettings] = useState<SoundSettings>(() => {
+    const saved = localStorage.getItem('omnipulse_sound_settings');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        // fallback
+      }
+    }
+    return {
+      enabled: true,
+      volume: 0.85,
+      preset: 'crystal_bell',
+      playOnNewTicket: true,
+      playOnIncomingMessage: true,
+      doubleRingOnNewTicket: true,
+    };
+  });
+
+  const [isBellRinging, setIsBellRinging] = useState(false);
+  const [incomingCallAlert, setIncomingCallAlert] = useState<IncomingCallAlert | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem('omnipulse_sound_settings', JSON.stringify(soundSettings));
+  }, [soundSettings]);
+
+  const updateSoundSettings = (updates: Partial<SoundSettings>) => {
+    setSoundSettings((prev) => ({ ...prev, ...updates }));
+  };
+
+  const dismissIncomingCallAlert = () => {
+    setIncomingCallAlert(null);
+  };
+
+  const playAttendanceChime = (
+    channel: 'chat' | 'whatsapp',
+    type: 'new_ticket' | 'message' = 'new_ticket',
+    presetOverride?: SoundPresetId
+  ) => {
+    // Trigger visual bell shake even if testing
+    setIsBellRinging(true);
+    setTimeout(() => setIsBellRinging(false), 2400);
+
+    if (!soundSettings.enabled && !presetOverride) return;
+
+    if (presetOverride) {
+      soundEngine.playPreset(presetOverride, soundSettings.volume, false);
+      return;
+    }
+
+    if (type === 'new_ticket' && soundSettings.playOnNewTicket) {
+      soundEngine.playPreset(
+        soundSettings.preset,
+        soundSettings.volume,
+        soundSettings.doubleRingOnNewTicket
+      );
+    } else if (type === 'message' && soundSettings.playOnIncomingMessage) {
+      soundEngine.playMessagePop(channel, soundSettings.volume);
+    }
+  };
 
   // Multi-Tenant state
   const [tenants, setTenants] = useState<TenantSystem[]>(() => {
     const saved = localStorage.getItem('omnipulse_tenants');
     return saved ? JSON.parse(saved) : initialTenants;
   });
-  const [currentTenantId, setCurrentTenantId] = useState<string>('tenant-omnipulse');
+  const [currentTenantId, setCurrentTenantId] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const slugOrId = params.get('empresa') || params.get('tenant');
+      if (slugOrId) {
+        const saved = localStorage.getItem('omnipulse_tenants');
+        const list: TenantSystem[] = saved ? JSON.parse(saved) : initialTenants;
+        const match = list.find((t) => t.slug === slugOrId || t.id === slugOrId);
+        if (match) return match.id;
+      }
+    }
+    return 'tenant-omnipulse';
+  });
   const [isNewTenantModalOpen, setIsNewTenantModalOpen] = useState(false);
 
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
@@ -327,8 +495,8 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [aiSettings]);
 
   useEffect(() => {
-    localStorage.setItem('omnipulse_web_gadget', JSON.stringify(webGadgetConfig));
-  }, [webGadgetConfig]);
+    localStorage.setItem('omnipulse_tenant_gadgets', JSON.stringify(tenantGadgetConfigs));
+  }, [tenantGadgetConfigs]);
 
   useEffect(() => {
     localStorage.setItem('omnipulse_tenants', JSON.stringify(tenants));
@@ -336,11 +504,55 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const currentTenant = tenants.find((t) => t.id === currentTenantId) || tenants[0];
 
-  const currentAgent = agents.find((a) => a.id === currentAgentId) || agents[0];
+  // Sync gatewayConfig phone & engine whenever currentTenant changes
+  useEffect(() => {
+    if (currentTenant) {
+      setGatewayConfig((prev) => ({
+        ...prev,
+        primaryPhoneNumber: currentTenant.primaryPhoneNumber,
+        activeEngine: currentTenant.whatsappEngine || prev.activeEngine,
+      }));
+    }
+  }, [currentTenantId, currentTenant?.primaryPhoneNumber, currentTenant?.whatsappEngine]);
+
+  // Scoped agents belonging exclusively to the current company (tenant)
+  const tenantAgents = agents.filter(
+    (a) =>
+      a.tenantId === currentTenantId ||
+      (!a.tenantId && currentTenantId === 'tenant-omnipulse')
+  );
+
+  // Per-company Web Gadget configuration
+  const webGadgetConfig: WebGadgetConfig = tenantGadgetConfigs[currentTenantId] || {
+    ...initialWebGadgetConfig,
+    brandTitle: `Atendimento ${currentTenant?.name || 'OmniPulse'}`,
+    brandSubtitle: `${currentTenant?.name || 'Equipe'} Online • WhatsApp ${currentTenant?.primaryPhoneNumber || ''}`,
+    greetingMessage: `Olá! Bem-vindo ao canal de atendimento exclusivo da ${currentTenant?.name || 'nossa empresa'}. Escolha abaixo se prefere atendimento via Chat ou via WhatsApp:`,
+  };
+
+  const currentAgent =
+    tenantAgents.find((a) => a.id === currentAgentId) ||
+    tenantAgents.find((a) => a.isMasterAdmin) ||
+    tenantAgents[0] ||
+    agents[0];
 
   // RBAC Permission Flags
   const canManageSettings = currentUserRole === 'superadmin' || currentUserRole === 'admin';
   const canAccessSuperAdmin = currentUserRole === 'superadmin';
+
+  // Only Operador Sênior and Admin (Admin Master / Administrador Geral / Super Admin)
+  // can view ALL departments and ALL atendimentos/deals.
+  // Atendente N1 (and any non-Senior / non-Admin attendant) ONLY sees their own atendimentos.
+  const isAgentMasterOrAdmin =
+    Boolean(currentAgent?.isMasterAdmin) ||
+    currentAgent?.role === 'Administrador Geral';
+  const isAgentSenior = currentAgent?.role === 'Operador Sênior';
+
+  const canViewAllDepartmentsAndTickets =
+    currentUserRole === 'superadmin' ||
+    isAgentMasterOrAdmin ||
+    isAgentSenior ||
+    (currentUserRole === 'admin' && currentAgent?.role !== 'Atendente N1');
 
   // State for Dedicated Company Login Portal
   const [companyLoginTenantId, setCompanyLoginTenantId] = useState<string | null>(() => {
@@ -370,15 +582,331 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  // Company-scoped tickets & deals
+  const tenantTickets = tickets.filter((t) => {
+    if (!t.tenantId) {
+      return currentTenantId === 'tenant-omnipulse' || currentUserRole === 'superadmin';
+    }
+    return t.tenantId === currentTenantId;
+  });
+
+  const tenantDeals = deals.filter((d) => {
+    if (!d.tenantId) {
+      return currentTenantId === 'tenant-omnipulse' || currentUserRole === 'superadmin';
+    }
+    return d.tenantId === currentTenantId;
+  });
+
   // Attendant isolation:
-  // - Attendants ONLY see their own assigned conversations (t.assignedAgentId === currentAgent.id)
-  // - Admin Master has complete visibility over all conversations of their own company/tenant
-  // - Super Admin can view all or currently selected tenant's conversations
-  const visibleTickets = currentUserRole === 'atendente'
-    ? tickets.filter((t) => t.assignedAgentId === currentAgent.id)
-    : currentUserRole === 'admin'
-    ? tickets.filter((t) => !t.tenantId || t.tenantId === currentTenantId)
-    : tickets;
+  // - Operador Sênior & Admin (Admin Master / Super Admin) see ALL departments and ALL atendimentos/deals of the company
+  // - Atendente N1 (and non-Senior/non-Admin attendants) ONLY see their own atendimentos (assignedAgentId === currentAgent.id)
+  const visibleTickets = canViewAllDepartmentsAndTickets
+    ? tenantTickets
+    : tenantTickets.filter((t) => t.assignedAgentId === currentAgent?.id);
+
+  const visibleDeals = canViewAllDepartmentsAndTickets
+    ? tenantDeals
+    : tenantDeals.filter((d) => d.assignedAgentId === currentAgent?.id);
+
+  const visibleDepartments = canViewAllDepartmentsAndTickets
+    ? departments
+    : departments.filter(
+        (d) =>
+          visibleTickets.some((t) => t.departmentId === d.id) ||
+          currentAgent?.departments?.includes(d.name)
+      );
+
+  // Track processed external sessions and message IDs to avoid duplicate alerts
+  const processedSessionIdsRef = useRef<Set<string>>(
+    new Set(tickets.map((t) => t.id))
+  );
+  const processedMsgIdsRef = useRef<Set<string>>(
+    new Set(tickets.flatMap((t) => t.messages.map((m) => m.id)))
+  );
+
+  // Real-Time Sync for External Widget Calls & Messages (BroadcastChannel + localStorage + Backend Webhook API)
+  useEffect(() => {
+    let isMounted = true;
+
+    const processExternalSessions = (sessions: any[]) => {
+      if (!isMounted || !Array.isArray(sessions)) return;
+
+      for (const session of sessions) {
+        const sId: string = session?.sessionId;
+        if (!sId) continue;
+
+        if (!processedSessionIdsRef.current.has(sId)) {
+          processedSessionIdsRef.current.add(sId);
+          if (Array.isArray(session.messages)) {
+            session.messages.forEach((m: any) => {
+              if (m?.id) processedMsgIdsRef.current.add(m.id);
+            });
+          }
+
+          const selectedChannel: 'chat' | 'whatsapp' =
+            session.originChannel === 'whatsapp' ? 'whatsapp' : 'chat';
+          const isChatChannel = selectedChannel === 'chat';
+
+          // Match department by ID or name
+          const dept =
+            departments.find(
+              (d) =>
+                d.id === session.department ||
+                d.name
+                  .toLowerCase()
+                  .includes(String(session.department || '').toLowerCase())
+            ) || departments[0];
+
+          // Match tenant by ID, slug, or companyName, or route to active tenant so logged-in attendant receives it
+          const matchedTenant =
+            tenants.find(
+              (t) =>
+                (session.tenantId && t.id === session.tenantId) ||
+                (session.tenantSlug && t.slug === session.tenantSlug) ||
+                (session.tenantSlug && t.id === session.tenantSlug) ||
+                (session.companyName &&
+                  t.name
+                    .toLowerCase()
+                    .includes(String(session.companyName).toLowerCase()))
+            ) || currentTenant;
+
+          // Ensure the currently logged-in attendant/admin of the active company sees the call immediately
+          const effectiveTenantId =
+            currentUserRole === 'atendente' || currentUserRole === 'admin'
+              ? currentTenantId
+              : matchedTenant?.id || currentTenantId;
+
+          const timeStr =
+            session.messages?.[0]?.timestamp ||
+            `${String(new Date().getHours()).padStart(2, '0')}:${String(
+              new Date().getMinutes()
+            ).padStart(2, '0')}`;
+
+          const mappedMessages = Array.isArray(session.messages)
+            ? session.messages.map((m: any) => ({
+                id: m.id || `m-${Date.now()}`,
+                sender: (m.sender === 'agent' || m.sender === 'ai_bot'
+                  ? m.sender
+                  : 'contact') as 'contact' | 'agent' | 'ai_bot',
+                senderName:
+                  m.senderName ||
+                  (m.sender === 'contact' ? session.name : currentAgent.name),
+                text: m.text || '',
+                timestamp: m.timestamp || timeStr,
+                status: 'delivered' as const,
+              }))
+            : [];
+
+          const lastMsgText =
+            mappedMessages.length > 0
+              ? mappedMessages[mappedMessages.length - 1].text
+              : session.message || 'Novo chamado externo';
+
+          const newExternalTicket: ChatTicket = {
+            id: sId,
+            tenantId: effectiveTenantId,
+            protocol:
+              session.protocol ||
+              (isChatChannel
+                ? `OP-CHAT-${Date.now().toString().slice(-4)}`
+                : `OP-WA-${Date.now().toString().slice(-4)}`),
+            contactName: session.name || 'Cliente Site Externo',
+            contactPhone: session.phone || '+55 11 99999-0000',
+            contactAvatar:
+              'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120&q=80',
+            departmentId: dept?.id || 'dept-01',
+            assignedAgentId: currentAgent.id,
+            phase: 'em_atendimento',
+            unreadCount: 1,
+            lastMessage: lastMsgText,
+            lastMessageTime: timeStr,
+            priority: 'high',
+            tags: isChatChannel
+              ? ['Origem: Chat', 'Widget Externo']
+              : ['Origem: WhatsApp', 'Widget Externo'],
+            aiHandled: false,
+            waitingTimeSeconds: 2,
+            slaExceeded: false,
+            originEngine: isChatChannel ? 'web_chat' : gatewayConfig.activeEngine,
+            originChannel: selectedChannel,
+            messages: mappedMessages,
+          };
+
+          setTickets((prev) => {
+            if (prev.some((t) => t.id === sId)) return prev;
+            return [newExternalTicket, ...prev];
+          });
+          setSelectedTicket(newExternalTicket);
+
+          // Ring the Attendant Sound Chime & Show Live Call Banner!
+          playAttendanceChime(selectedChannel, 'new_ticket');
+          setIncomingCallAlert({
+            id: `alert-${Date.now()}`,
+            ticketId: sId,
+            contactName: newExternalTicket.contactName,
+            contactPhone: newExternalTicket.contactPhone,
+            channel: selectedChannel,
+            departmentName:
+              dept?.name || session.department || 'Atendimento Geral',
+            message: session.messages?.[0]?.text || lastMsgText,
+            protocol: newExternalTicket.protocol,
+          });
+
+          addAuditEvent({
+            type: 'conectividade',
+            title: isChatChannel
+              ? `Chamada Widget Externo (Chat) — ${
+                  matchedTenant?.name || currentTenant.name
+                }`
+              : `Chamada Widget Externo (WhatsApp) — ${
+                  matchedTenant?.name || currentTenant.name
+                }`,
+            description: `Cliente ${newExternalTicket.contactName} (${
+              newExternalTicket.contactPhone
+            }) iniciou atendimento via Widget Externo no setor ${
+              dept?.name || 'Geral'
+            }.`,
+            author: isChatChannel
+              ? 'Widget Externo (Chat)'
+              : 'Widget Externo (WhatsApp)',
+            badge: isChatChannel ? 'Origem: Chat' : 'Origem: WhatsApp',
+          });
+        } else if (Array.isArray(session.messages)) {
+          // Check if there are new messages from the external customer inside an existing session
+          const newCustomerMessages = session.messages.filter(
+            (m: any) => m?.id && !processedMsgIdsRef.current.has(m.id)
+          );
+
+          if (newCustomerMessages.length > 0) {
+            newCustomerMessages.forEach((m: any) => {
+              processedMsgIdsRef.current.add(m.id);
+            });
+
+            const hasNewContactMsg = newCustomerMessages.some(
+              (m: any) => m.sender === 'contact'
+            );
+
+            setTickets((prev) =>
+              prev.map((t) => {
+                if (t.id !== sId) return t;
+                const existingIds = new Set(t.messages.map((msg) => msg.id));
+                const toAppend = newCustomerMessages
+                  .filter((m: any) => !existingIds.has(m.id))
+                  .map((m: any) => ({
+                    id: m.id,
+                    sender: (m.sender === 'agent' || m.sender === 'ai_bot'
+                      ? m.sender
+                      : 'contact') as 'contact' | 'agent' | 'ai_bot',
+                    senderName:
+                      m.senderName ||
+                      (m.sender === 'contact' ? t.contactName : currentAgent.name),
+                    text: m.text,
+                    timestamp: m.timestamp || t.lastMessageTime,
+                    status: 'delivered' as const,
+                  }));
+
+                if (toAppend.length === 0) return t;
+                const lastAdded = toAppend[toAppend.length - 1];
+                return {
+                  ...t,
+                  lastMessage: lastAdded.text,
+                  lastMessageTime: lastAdded.timestamp,
+                  unreadCount: hasNewContactMsg
+                    ? t.unreadCount + toAppend.length
+                    : t.unreadCount,
+                  messages: [...t.messages, ...toAppend],
+                };
+              })
+            );
+
+            if (hasNewContactMsg) {
+              const ch: 'chat' | 'whatsapp' =
+                session.originChannel === 'whatsapp' ? 'whatsapp' : 'chat';
+              playAttendanceChime(ch, 'message');
+            }
+          }
+        }
+      }
+    };
+
+    const checkLocalAndRemoteSessions = async () => {
+      // 1. Check localStorage external sessions (works on Vercel static hosting & cross-tab)
+      try {
+        const rawLocal = localStorage.getItem('omnipulse_external_sessions');
+        if (rawLocal) {
+          const parsedLocal = JSON.parse(rawLocal);
+          if (Array.isArray(parsedLocal)) {
+            processExternalSessions(parsedLocal);
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      // 2. Check backend API external events
+      try {
+        const res = await fetch('/api/webhook/external-events');
+        if (res.ok) {
+          const data = await res.json();
+          if (data && Array.isArray(data.sessions)) {
+            processExternalSessions(data.sessions);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    // 3. Instant BroadcastChannel listener (< 5ms latency)
+    let bc: BroadcastChannel | null = null;
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        bc = new BroadcastChannel('omnipulse_crm_realtime');
+        bc.onmessage = (event) => {
+          const data = event.data;
+          if (!data || typeof data !== 'object') return;
+          if (data.type === 'OMNIPULSE_EXTERNAL_SESSION' && data.session) {
+            processExternalSessions([data.session]);
+          } else if (
+            data.type === 'OMNIPULSE_CUSTOMER_MESSAGE' &&
+            data.sessionId &&
+            data.message
+          ) {
+            checkLocalAndRemoteSessions();
+          }
+        };
+      }
+    } catch {
+      // ignore
+    }
+
+    // 4. Native window storage event listener
+    const handleStorageEvent = (e: StorageEvent) => {
+      if (e.key === 'omnipulse_external_sessions' && e.newValue) {
+        try {
+          const list = JSON.parse(e.newValue);
+          if (Array.isArray(list)) {
+            processExternalSessions(list);
+          }
+        } catch {
+          // ignore
+        }
+      }
+    };
+
+    window.addEventListener('storage', handleStorageEvent);
+    checkLocalAndRemoteSessions();
+    const intervalId = setInterval(checkLocalAndRemoteSessions, 1200);
+
+    return () => {
+      isMounted = false;
+      clearInterval(intervalId);
+      window.removeEventListener('storage', handleStorageEvent);
+      if (bc) {
+        bc.close();
+      }
+    };
+  }, [currentTenantId, currentUserRole, currentAgent.id, departments, tenants]);
 
   const openQrCodeForActivation = () => {
     // Lock API & WhatsApp QR configuration: Attendants CANNOT open QR pairing
@@ -390,11 +918,12 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const addTenant = (data: Omit<TenantSystem, 'id' | 'createdAt' | 'agentCount' | 'activeTicketsCount'>) => {
     const rawSlug = (data as any).slug || data.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
     const uniqueSlug = rawSlug || `empresa-${Date.now().toString().slice(-4)}`;
+    const newTenantId = `tenant-${Date.now().toString().slice(-6)}`;
 
     const newTenant: TenantSystem = {
       ...data,
       slug: uniqueSlug,
-      id: `tenant-${Date.now().toString().slice(-6)}`,
+      id: newTenantId,
       createdAt: new Date().toISOString().split('T')[0],
       agentCount: 1,
       activeTicketsCount: 0,
@@ -402,6 +931,32 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     setTenants((prev) => [newTenant, ...prev]);
+
+    // Automatically create the Master Admin agent for this newly created company
+    const newMasterAgent: Agent = {
+      id: `agent-master-${newTenantId}`,
+      tenantId: newTenantId,
+      name: data.masterAdminName,
+      email: data.masterAdminEmail,
+      phone: data.primaryPhoneNumber,
+      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=160&q=80',
+      role: 'Administrador Geral',
+      isMasterAdmin: true,
+      password: data.masterAdminPassword || 'admin123',
+      departments: departments.slice(0, 4).map((d) => d.name),
+      status: 'online',
+      shift: 'Turno Master 08:00 - 19:00',
+      activeChats: 0,
+      maxChats: 10,
+      rating: 5.0,
+      totalResolved: 0,
+      conversionRate: 0,
+      avgResponseTimeSeconds: 25,
+      avgResolutionTimeMinutes: 10,
+      revenueGenerated: 0,
+    };
+
+    setAgents((prev) => [newMasterAgent, ...prev]);
 
     addAuditEvent({
       type: 'config',
@@ -463,9 +1018,16 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!target) return;
 
     setCurrentTenantId(tenantId);
+    const targetMaster = agents.find(
+      (a) => a.tenantId === tenantId && a.isMasterAdmin
+    );
+    if (targetMaster) {
+      setCurrentAgentId(targetMaster.id);
+    }
     setGatewayConfig((prev) => ({
       ...prev,
       primaryPhoneNumber: target.primaryPhoneNumber,
+      activeEngine: target.whatsappEngine || prev.activeEngine,
     }));
 
     addAuditEvent({
@@ -516,15 +1078,16 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: true };
     }
 
-    // 2. Check Admin Master across any tenant registered in system
-    const matchingTenant = tenants.find((t) => {
-      const emailMatches =
-        !email ||
-        t.masterAdminEmail.toLowerCase() === email ||
-        (t.id === currentTenantId &&
-          (email === 'isabella.admin@omnipulse.io' || email === 'isabella.rodrigues@omnipulse.io'));
-      return emailMatches;
-    });
+    // 2. Check Admin Master (prioritize currentTenant when logging in via password modal, or match by email)
+    const matchingTenant = email
+      ? tenants.find(
+          (t) =>
+            t.masterAdminEmail.toLowerCase() === email ||
+            (t.id === currentTenantId &&
+              (email === 'isabella.admin@omnipulse.io' ||
+                email === 'isabella.rodrigues@omnipulse.io'))
+        ) || currentTenant
+      : currentTenant;
 
     if (matchingTenant) {
       const isTenantAdminPassword =
@@ -537,7 +1100,10 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setCurrentUserRole('admin');
         setCurrentTenantId(matchingTenant.id);
         setActiveView('admin');
-        const adminAgent = agents.find((a) => a.isMasterAdmin) || agents[0];
+        const adminAgent =
+          agents.find((a) => a.tenantId === matchingTenant.id && a.isMasterAdmin) ||
+          agents.find((a) => a.isMasterAdmin) ||
+          agents[0];
         setCurrentAgentId(adminAgent.id);
         addAuditEvent({
           type: 'validacao',
@@ -550,25 +1116,34 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     }
 
-    // 3. Check Atendentes
-    const matchedAgent = agents.find((a) => {
-      const emailMatches = !email || a.email.toLowerCase() === email;
-      const passMatches =
-        (a.password || 'atendente123') === password || password === 'atendente123';
-      return emailMatches && passMatches;
-    });
+    // 3. Check Atendentes (scoped to currentTenant first)
+    const matchedAgent =
+      tenantAgents.find((a) => {
+        const emailMatches = !email || a.email.toLowerCase() === email;
+        const passMatches =
+          (a.password || 'atendente123') === password || password === 'atendente123';
+        return emailMatches && passMatches && !a.isMasterAdmin;
+      }) ||
+      agents.find((a) => {
+        const emailMatches = !email || a.email.toLowerCase() === email;
+        const passMatches =
+          (a.password || 'atendente123') === password || password === 'atendente123';
+        return emailMatches && passMatches;
+      });
 
     if (matchedAgent) {
+      const targetTenantId = matchedAgent.tenantId || currentTenantId;
       setIsAuthenticated(true);
-      setCurrentUserRole('atendente');
+      setCurrentTenantId(targetTenantId);
+      setCurrentUserRole(matchedAgent.isMasterAdmin ? 'admin' : 'atendente');
       setCurrentAgentId(matchedAgent.id);
-      setActiveView('kanban-agent');
+      setActiveView(matchedAgent.isMasterAdmin ? 'admin' : 'kanban-agent');
       addAuditEvent({
         type: 'conectividade',
-        title: 'Login de Atendente',
-        description: `Operador ${matchedAgent.name} (${matchedAgent.email}) autenticado na estação de trabalho com visão restrita.`,
+        title: matchedAgent.isMasterAdmin ? 'Login de Admin Master' : 'Login de Atendente',
+        description: `Operador ${matchedAgent.name} (${matchedAgent.email}) autenticado na estação de trabalho.`,
         author: matchedAgent.name,
-        badge: 'Atendente',
+        badge: matchedAgent.isMasterAdmin ? 'Admin Master' : 'Atendente',
       });
       return { success: true };
     }
@@ -592,8 +1167,11 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: false, error: 'Empresa não encontrada no sistema!' };
     }
 
-    // 1. Check if it's the Admin Master of this specific company
-    const isMasterEmail = email === targetTenant.masterAdminEmail.toLowerCase();
+    // 1. Check if it's the Admin Master of this specific company (or general admin master credentials)
+    const isMasterEmail =
+      email === targetTenant.masterAdminEmail.toLowerCase() ||
+      email === 'isabella.admin@omnipulse.io' ||
+      email.startsWith('admin@');
     const isMasterPass =
       password === targetTenant.masterAdminPassword || password === 'admin123';
 
@@ -603,9 +1181,9 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setCurrentUserRole('admin');
       setActiveView('admin');
       const adminAgent =
-        agents.find(
-          (a) => (a.tenantId === targetTenant.id || !a.tenantId) && a.isMasterAdmin
-        ) || agents[0];
+        agents.find((a) => a.tenantId === targetTenant.id && a.isMasterAdmin) ||
+        agents.find((a) => a.isMasterAdmin) ||
+        agents[0];
       setCurrentAgentId(adminAgent.id);
       setCompanyLoginTenantId(null);
       addAuditEvent({
@@ -621,25 +1199,26 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // 2. Check if it's an Atendente belonging to this specific company
     const matchedAgent = agents.find((a) => {
       const emailMatches = a.email.toLowerCase() === email;
-      const tenantMatches = !a.tenantId || a.tenantId === targetTenant.id;
+      const tenantMatches = a.tenantId === targetTenant.id || !a.tenantId;
       const passMatches =
         (a.password || 'atendente123') === password || password === 'atendente123';
       return emailMatches && tenantMatches && passMatches;
     });
 
     if (matchedAgent) {
+      const isAgMaster = Boolean(matchedAgent.isMasterAdmin || matchedAgent.role === 'Administrador Geral');
       setIsAuthenticated(true);
       setCurrentTenantId(targetTenant.id);
-      setCurrentUserRole('atendente');
+      setCurrentUserRole(isAgMaster ? 'admin' : 'atendente');
       setCurrentAgentId(matchedAgent.id);
-      setActiveView('inbox');
+      setActiveView(isAgMaster ? 'admin' : 'inbox');
       setCompanyLoginTenantId(null);
       addAuditEvent({
         type: 'conectividade',
-        title: `Login de Atendente: ${matchedAgent.name}`,
-        description: `Operador ${matchedAgent.name} autenticado na empresa ${targetTenant.name}. Acesso restrito somente às suas conversas.`,
+        title: isAgMaster ? `Login Admin Master: ${matchedAgent.name}` : `Login de Atendente: ${matchedAgent.name}`,
+        description: `Operador ${matchedAgent.name} autenticado na empresa ${targetTenant.name}.`,
         author: matchedAgent.name,
-        badge: 'Atendente',
+        badge: isAgMaster ? 'Admin Master' : 'Atendente',
       });
       return { success: true };
     }
@@ -684,7 +1263,13 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateWebGadgetConfig = (updates: Partial<WebGadgetConfig>) => {
-    setWebGadgetConfig((prev) => ({ ...prev, ...updates }));
+    setTenantGadgetConfigs((prev) => ({
+      ...prev,
+      [currentTenantId]: {
+        ...webGadgetConfig,
+        ...updates,
+      },
+    }));
   };
 
   const startChatFromGadget = async (data: {
@@ -693,36 +1278,63 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     phone: string;
     departmentId: string;
     message: string;
+    channel?: 'whatsapp' | 'chat';
   }): Promise<string> => {
     const ticketId = `ticket-${Date.now().toString().slice(-5)}`;
     const now = new Date();
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const selectedChannel = data.channel || 'whatsapp';
+    const isChatChannel = selectedChannel === 'chat';
+    const dept = departments.find((d) => d.id === data.departmentId);
+
+    const welcomeReplyText = isChatChannel
+      ? `Olá ${data.name}! 👋 Recebemos sua solicitação via Chat Online no departamento ${dept?.name || 'de Atendimento'}. Um especialista (${currentAgent.name}) já está conectado nesta janela com você.`
+      : `Olá ${data.name}! 📱 Sua conversa via WhatsApp (${gatewayConfig.primaryPhoneNumber}) foi iniciada no departamento ${dept?.name || 'de Atendimento'}. Você pode conversar diretamente por esta caixa de diálogo com ${currentAgent.name}!`;
+
+    const msgInitId = `m-init-${Date.now()}`;
+    const msgWelcomeId = `m-welcome-${Date.now() + 1}`;
+    processedSessionIdsRef.current.add(ticketId);
+    processedMsgIdsRef.current.add(msgInitId);
+    processedMsgIdsRef.current.add(msgWelcomeId);
 
     const newTicket: ChatTicket = {
       id: ticketId,
-      protocol: `OP-WEB-${Date.now().toString().slice(-4)}`,
+      tenantId: currentTenantId,
+      protocol: isChatChannel
+        ? `OP-CHAT-${Date.now().toString().slice(-4)}`
+        : `OP-WA-${Date.now().toString().slice(-4)}`,
       contactName: data.name,
       contactPhone: data.phone,
       contactAvatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=120&q=80',
       departmentId: data.departmentId,
-      assignedAgentId: null,
-      phase: 'triagem',
+      assignedAgentId: currentAgent.id,
+      phase: 'em_atendimento',
       unreadCount: 1,
       lastMessage: data.message,
       lastMessageTime: timeStr,
       priority: 'high',
-      tags: ['Gadget Web', 'Inbound'],
+      tags: isChatChannel ? ['Origem: Chat', 'Chat Online'] : ['Origem: WhatsApp', 'WhatsApp Direto'],
       aiHandled: false,
       waitingTimeSeconds: 5,
       slaExceeded: false,
-      originEngine: gatewayConfig.activeEngine,
+      originEngine: isChatChannel ? 'web_chat' : gatewayConfig.activeEngine,
+      originChannel: selectedChannel,
       messages: [
         {
-          id: `m-init-${Date.now()}`,
+          id: msgInitId,
           sender: 'contact',
+          senderName: data.name,
           text: data.message,
           timestamp: timeStr,
           status: 'delivered',
+        },
+        {
+          id: msgWelcomeId,
+          sender: 'agent',
+          senderName: currentAgent.name,
+          text: welcomeReplyText,
+          timestamp: timeStr,
+          status: 'read',
         },
       ],
     };
@@ -730,18 +1342,49 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setTickets((prev) => [newTicket, ...prev]);
     setSelectedTicket(newTicket);
 
+    // Also broadcast to server so any other open browser window/tab receives the call and rings the chime
+    fetch('/api/webhook/web-lead', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: ticketId,
+        tenantId: currentTenantId,
+        tenantSlug: currentTenant?.slug || '',
+        companyName: currentTenant?.name || '',
+        name: data.name,
+        phone: data.phone,
+        email: data.email,
+        department: dept?.name || data.departmentId,
+        message: data.message,
+        originChannel: selectedChannel,
+      }),
+    }).catch(() => {});
+
+    // Ring the Attendant Sound Chime & Show Live Call Banner!
+    playAttendanceChime(selectedChannel, 'new_ticket');
+    setIncomingCallAlert({
+      id: `alert-${Date.now()}`,
+      ticketId,
+      contactName: data.name,
+      contactPhone: data.phone,
+      channel: selectedChannel,
+      departmentName: dept?.name || 'Atendimento Geral',
+      message: data.message,
+      protocol: newTicket.protocol,
+    });
+
     addAuditEvent({
       type: 'conectividade',
-      title: 'Novo Atendimento via Gadget Web',
-      description: `Cliente ${data.name} (${data.phone}) iniciou conversa pelo formulário do site.`,
-      author: 'Gadget Web Form',
-      badge: 'Novo Lead',
+      title: isChatChannel ? 'Novo Atendimento (Origem: Chat)' : 'Novo Atendimento (Origem: WhatsApp)',
+      description: `Cliente ${data.name} (${data.phone}) iniciou conversa via ${isChatChannel ? 'Chat Online' : 'WhatsApp'} no departamento ${dept?.name || 'Geral'}.`,
+      author: isChatChannel ? 'Widget Chat Web' : 'Widget WhatsApp',
+      badge: isChatChannel ? 'Origem: Chat' : 'Origem: WhatsApp',
     });
 
     if (aiSettings.enabled && aiSettings.respondWhenAgentsOffline) {
       setTimeout(() => {
         triggerAiFallbackForTicket(ticketId);
-      }, 1000);
+      }, 1200);
     }
 
     return ticketId;
@@ -826,7 +1469,9 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const newAgent: Agent = {
       ...agentData,
-      id: `agent-0${agents.length + 1}`,
+      id: `agent-${Date.now().toString().slice(-4)}`,
+      tenantId: currentTenantId,
+      password: agentData.password || 'atendente123',
       activeChats: 0,
       rating: 5.0,
       totalResolved: 0,
@@ -837,10 +1482,15 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     setAgents((prev) => [...prev, newAgent]);
+    setTenants((prev) =>
+      prev.map((t) =>
+        t.id === currentTenantId ? { ...t, agentCount: (t.agentCount || 1) + 1 } : t
+      )
+    );
     addAuditEvent({
       type: 'validacao',
-      title: 'Novo Atendente Homologado',
-      description: `Operador ${newAgent.name} registrado com alocação tripla em: ${newAgent.departments.slice(0, 3).join(', ')}.`,
+      title: `Novo Atendente Homologado (${currentTenant.name})`,
+      description: `Operador ${newAgent.name} registrado na empresa ${currentTenant.name} com alocação em: ${newAgent.departments.slice(0, 3).join(', ')}.`,
       author: `${currentAgent.name} (Master)`,
       badge: 'Conformidade',
     });
@@ -882,10 +1532,17 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return;
     }
     setAgents((prev) => prev.filter((a) => a.id !== id));
+    setTenants((prev) =>
+      prev.map((t) =>
+        t.id === currentTenantId
+          ? { ...t, agentCount: Math.max(1, (t.agentCount || 2) - 1) }
+          : t
+      )
+    );
     addAuditEvent({
       type: 'config',
       title: 'Atendente Removido',
-      description: `Acesso do operador ${existing?.name || id} revogado.`,
+      description: `Acesso do operador ${existing?.name || id} revogado na empresa ${currentTenant.name}.`,
       author: `${currentAgent.name} (Master)`,
       badge: 'Removido',
     });
@@ -906,7 +1563,18 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const switchCurrentAgent = (agentId: string) => {
+    const target = agents.find((a) => a.id === agentId);
     setCurrentAgentId(agentId);
+    if (target) {
+      if (target.tenantId && target.tenantId !== currentTenantId) {
+        setCurrentTenantId(target.tenantId);
+      }
+      if (target.isMasterAdmin || target.role === 'Administrador Geral') {
+        setCurrentUserRole('admin');
+      } else {
+        setCurrentUserRole('atendente');
+      }
+    }
   };
 
   // Funnel Deals CRUD
@@ -914,6 +1582,7 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const today = new Date().toISOString().split('T')[0];
     const newDeal: Deal = {
       ...dealData,
+      tenantId: dealData.tenantId || currentTenantId,
       id: `deal-${Date.now().toString().slice(-4)}`,
       createdAt: today,
       updatedAt: today,
@@ -985,8 +1654,11 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const now = new Date();
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
+    const newMsgId = `msg-${Date.now()}`;
+    processedMsgIdsRef.current.add(newMsgId);
+
     const newMessage = {
-      id: `msg-${Date.now()}`,
+      id: newMsgId,
       sender,
       senderName: sender === 'agent' ? currentAgent.name : sender === 'ai_bot' ? 'Assistente IA OmniPulse' : undefined,
       text,
@@ -1010,9 +1682,64 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       })
     );
 
-    // If message was sent by contact, check if AI fallback is triggered
+    // Sync message to BroadcastChannel, localStorage, and backend session so external widget (Script / Iframe) receives attendant replies in real time
+    const externalMsgPayload = {
+      id: newMsgId,
+      sender,
+      senderName:
+        sender === 'agent'
+          ? currentAgent.name
+          : sender === 'ai_bot'
+          ? 'Assistente IA'
+          : undefined,
+      text,
+      timestamp: timeStr,
+      createdAt: Date.now(),
+    };
+
+    try {
+      const rawLocal = localStorage.getItem('omnipulse_external_sessions');
+      if (rawLocal) {
+        const list = JSON.parse(rawLocal);
+        if (Array.isArray(list)) {
+          const idx = list.findIndex((s: any) => s.sessionId === ticketId);
+          if (idx >= 0) {
+            list[idx].messages = [...(list[idx].messages || []), externalMsgPayload];
+            list[idx].updatedAt = Date.now();
+            localStorage.setItem('omnipulse_external_sessions', JSON.stringify(list));
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    try {
+      if (typeof BroadcastChannel !== 'undefined' && (sender === 'agent' || sender === 'ai_bot')) {
+        const bc = new BroadcastChannel('omnipulse_crm_realtime');
+        bc.postMessage({
+          type: 'OMNIPULSE_AGENT_REPLY',
+          sessionId: ticketId,
+          message: externalMsgPayload,
+        });
+        bc.close();
+      }
+    } catch {
+      // ignore
+    }
+
+    fetch(`/api/webhook/web-chat/${encodeURIComponent(ticketId)}/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(externalMsgPayload),
+    }).catch(() => {});
+
+    // If message was sent by contact, play incoming message chime & check AI fallback
     if (sender === 'contact') {
       const ticket = tickets.find((t) => t.id === ticketId);
+      const ch = ticket?.originChannel === 'chat' || ticket?.originEngine === 'web_chat' ? 'chat' : 'whatsapp';
+      playAttendanceChime(ch, 'message');
+
       const assigned = agents.find((a) => a.id === ticket?.assignedAgentId);
       const isAgentOfflineOrBusy = !assigned || assigned.status !== 'online';
 
@@ -1030,9 +1757,15 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   };
 
-  const transferTicket = (ticketId: string, targetDeptId: string, targetAgentId: string | null = null) => {
+  const transferTicket = (
+    ticketId: string,
+    targetDeptId: string,
+    targetAgentId?: string | null
+  ) => {
     const targetDept = departments.find((d) => d.id === targetDeptId);
-    const targetAgent = agents.find((a) => a.id === targetAgentId);
+    const targetAgent = targetAgentId
+      ? agents.find((a) => a.id === targetAgentId)
+      : undefined;
 
     setTickets((prev) =>
       prev.map((t) => {
@@ -1040,7 +1773,8 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           return {
             ...t,
             departmentId: targetDeptId,
-            assignedAgentId: targetAgentId,
+            assignedAgentId:
+              targetAgentId !== undefined ? targetAgentId : t.assignedAgentId,
             phase: 'transbordo',
           };
         }
@@ -1056,6 +1790,32 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }.`,
       author: currentAgent.name,
       badge: 'Transbordo',
+    });
+  };
+
+  const assignTicketToAgent = (ticketId: string, agentId: string | null) => {
+    const targetAgent = agentId ? agents.find((a) => a.id === agentId) : null;
+    setTickets((prev) =>
+      prev.map((t) => {
+        if (t.id === ticketId) {
+          return {
+            ...t,
+            assignedAgentId: agentId,
+            phase: agentId && t.phase === 'triagem' ? 'em_atendimento' : t.phase,
+          };
+        }
+        return t;
+      })
+    );
+
+    addAuditEvent({
+      type: 'transbordo',
+      title: 'Atendimento Atribuído a Atendente',
+      description: `Ticket ${ticketId} atribuído para ${
+        targetAgent ? `${targetAgent.name} (${targetAgent.role})` : 'Fila Geral (Sem Atendente)'
+      }.`,
+      author: currentAgent.name,
+      badge: targetAgent?.role || 'Fila',
     });
   };
 
@@ -1214,6 +1974,18 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setTickets((prev) => [newTicket, ...prev]);
 
+    playAttendanceChime('whatsapp', 'new_ticket');
+    setIncomingCallAlert({
+      id: `alert-${Date.now()}`,
+      ticketId,
+      contactName: name,
+      contactPhone: phone,
+      channel: 'whatsapp',
+      departmentName: 'Comercial & Vendas',
+      message,
+      protocol: newTicket.protocol,
+    });
+
     addAuditEvent({
       type: 'conectividade',
       title: `Webhook Recebido (${engine.toUpperCase()})`,
@@ -1241,16 +2013,62 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
+  const simulateIncomingAttendanceCall = async (channel: 'chat' | 'whatsapp') => {
+    const sampleClients =
+      channel === 'chat'
+        ? [
+            {
+              name: 'Fernanda Albuquerque',
+              phone: '+55 11 99123-4567',
+              email: 'fernanda@techbrasil.com.br',
+              msg: 'Olá! Estou no site e gostaria de atendimento imediato via Chat Online sobre o plano Pro.',
+            },
+            {
+              name: 'Gabriel Monteiro',
+              phone: '+55 21 98765-1122',
+              email: 'gabriel@monteirolog.com.br',
+              msg: 'Bom dia! Preciso de ajuda do comercial aqui no Chat para contratar 10 licenças.',
+            },
+          ]
+        : [
+            {
+              name: 'Ricardo Vasconcelos',
+              phone: '+55 11 98444-9900',
+              email: 'ricardo@vasconcelos.ind.br',
+              msg: 'Olá! Chamei pelo WhatsApp do site para fechar a implantação do CRM Omnichannel.',
+            },
+            {
+              name: 'Camila Rocha',
+              phone: '+55 31 99332-8811',
+              email: 'camila@rochacorp.com.br',
+              msg: 'Oi! Vim pelo botão de WhatsApp e quero agendar uma demonstração.',
+            },
+          ];
+
+    const pick = sampleClients[Math.floor(Math.random() * sampleClients.length)];
+    await startChatFromGadget({
+      name: pick.name,
+      email: pick.email,
+      phone: pick.phone,
+      departmentId: departments[0]?.id || 'dept-01',
+      message: pick.msg,
+      channel,
+    });
+  };
+
   return (
     <CRMContext.Provider
       value={{
         activeView,
         setActiveView,
         departments,
-        agents,
+        visibleDepartments,
+        agents: tenantAgents,
         deals,
+        visibleDeals,
         tickets,
         visibleTickets,
+        canViewAllDepartmentsAndTickets,
         gatewayConfig,
         auditEvents,
         aiSettings,
@@ -1304,6 +2122,7 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         sendChatMessage,
         updateTicketPhase,
         transferTicket,
+        assignTicketToAgent,
         triggerAiFallbackForTicket,
         switchActiveEngine,
         updateGatewayConfig,
@@ -1327,6 +2146,13 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setWhatsappConnectionState,
         scheduleTargetLead,
         setScheduleTargetLead,
+        soundSettings,
+        updateSoundSettings,
+        playAttendanceChime,
+        isBellRinging,
+        incomingCallAlert,
+        dismissIncomingCallAlert,
+        simulateIncomingAttendanceCall,
         triggerConfetti,
       }}
     >

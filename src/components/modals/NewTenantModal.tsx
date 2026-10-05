@@ -36,7 +36,15 @@ export const NewTenantModal: React.FC = () => {
     e.preventDefault();
     if (!name || !primaryPhoneNumber || !masterAdminName) return;
 
+    const generatedSlug = name
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '');
+
     addTenant({
+      slug: generatedSlug || `empresa-${Date.now().toString().slice(-4)}`,
       name,
       cnpjOrId: cnpjOrId || '42.991.000/0001-20',
       plan,

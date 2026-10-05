@@ -26,6 +26,7 @@ import { LoginModal } from './components/modals/LoginModal';
 import { WhatsAppQrModal } from './components/modals/WhatsAppQrModal';
 import { NewTenantModal } from './components/modals/NewTenantModal';
 import { ChatGadgetWidget } from './components/gadget/ChatGadgetWidget';
+import { ExternalWidgetEmbedView } from './components/gadget/ExternalWidgetEmbedView';
 
 const MainContent: React.FC = () => {
   const { activeView } = useCRM();
@@ -95,6 +96,19 @@ const RootApp: React.FC = () => {
 };
 
 export default function App() {
+  if (typeof window !== 'undefined') {
+    const params = new URLSearchParams(window.location.search);
+    const embedMode = params.get('embed');
+    const isEmbedPath = window.location.pathname.startsWith('/embed/widget');
+
+    if (embedMode === 'bridge') {
+      return <ExternalWidgetEmbedView mode="bridge" />;
+    }
+    if (embedMode === 'widget' || isEmbedPath) {
+      return <ExternalWidgetEmbedView mode="widget" />;
+    }
+  }
+
   return (
     <CRMProvider>
       <RootApp />
