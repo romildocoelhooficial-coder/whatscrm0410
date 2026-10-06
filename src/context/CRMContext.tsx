@@ -109,7 +109,7 @@ interface CRMContextType {
   setIsLoginModalOpen: (open: boolean) => void;
 
   // Primary Phone Number
-  updatePrimaryPhoneNumber: (newPhone: string) => void;
+  updatePrimaryPhoneNumber: (newPhone: string, targetTenantId?: string) => void;
 
   // QR Code Activation
   openQrCodeForActivation: () => void;
@@ -500,7 +500,28 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   useEffect(() => {
     localStorage.setItem('omnipulse_tenants', JSON.stringify(tenants));
+    fetch('/api/storage/tenants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tenants }),
+    }).catch(() => {});
   }, [tenants]);
+
+  // Sync tenants from backend storage on initial load if available
+  useEffect(() => {
+    const hasLocalCustom = localStorage.getItem('omnipulse_tenants_customized');
+    if (!hasLocalCustom) {
+      fetch('/api/storage/tenants')
+        .then((r) => r.json())
+        .then((data) => {
+          if (data && Array.isArray(data.tenants) && data.tenants.length > 0) {
+            setTenants(data.tenants);
+            localStorage.setItem('omnipulse_tenants', JSON.stringify(data.tenants));
+          }
+        })
+        .catch(() => {});
+    }
+  }, []);
 
   const currentTenant = tenants.find((t) => t.id === currentTenantId) || tenants[0];
 
@@ -738,6 +759,51 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           });
           setSelectedTicket(newExternalTicket);
 
+          // Also create a Deal in Kanban de Negócios so the lead appears across all boards
+          const todayStr = new Date().toISOString().split('T')[0];
+          const dealId = `deal-ext-${sId.slice(-6)}`;
+          const newExternalDeal: Deal = {
+            id: dealId,
+            tenantId: effectiveTenantId,
+            title: `Atendimento ${newExternalTicket.contactName}`,
+            contactName: newExternalTicket.contactName,
+            contactPhone: newExternalTicket.contactPhone,
+            companyName: matchedTenant?.name || currentTenant.name,
+            value: 3500,
+            stage: 'lead_inbound',
+            assignedAgentId: currentAgent.id,
+            departmentId: dept?.id || 'dept-01',
+            priority: 'high',
+            tags: isChatChannel
+              ? ['Widget Externo', 'Origem: Chat']
+              : ['Widget Externo', 'Origem: WhatsApp'],
+            createdAt: todayStr,
+            updatedAt: todayStr,
+            lastInteraction: 'Agora mesmo',
+            notes: `Chamado iniciado via Widget Externo (${
+              isChatChannel ? 'Chat Online' : 'WhatsApp'
+            }): "${session.messages?.[0]?.text || lastMsgText}"`,
+          };
+          setDeals((prev) => {
+            if (prev.some((d) => d.id === dealId)) return prev;
+            return [newExternalDeal, ...prev];
+          });
+
+          // Persist session to localStorage so it survives page reloads
+          try {
+            const rawLocal = localStorage.getItem('omnipulse_external_sessions');
+            const list = rawLocal ? JSON.parse(rawLocal) : [];
+            if (Array.isArray(list) && !list.some((item: any) => item?.sessionId === sId)) {
+              list.unshift(session);
+              localStorage.setItem(
+                'omnipulse_external_sessions',
+                JSON.stringify(list.slice(0, 50))
+              );
+            }
+          } catch {
+            // ignore
+          }
+
           // Ring the Attendant Sound Chime & Show Live Call Banner!
           playAttendanceChime(selectedChannel, 'new_ticket');
           setIncomingCallAlert({
@@ -829,6 +895,73 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     };
 
+    const processDirectCustomerMessage = (
+      sessionId: string,
+      msg: any,
+      originChannel?: 'chat' | 'whatsapp'
+    ) => {
+      if (!isMounted || !sessionId || !msg?.id) return;
+      if (processedMsgIdsRef.current.has(msg.id)) return;
+      processedMsgIdsRef.current.add(msg.id);
+
+      const timeStr =
+        msg.timestamp ||
+        `${String(new Date().getHours()).padStart(2, '0')}:${String(
+          new Date().getMinutes()
+        ).padStart(2, '0')}`;
+
+      setTickets((prev) =>
+        prev.map((t) => {
+          if (t.id !== sessionId) return t;
+          if (t.messages.some((existing) => existing.id === msg.id)) return t;
+          const mappedMsg = {
+            id: msg.id,
+            sender: (msg.sender === 'agent' || msg.sender === 'ai_bot'
+              ? msg.sender
+              : 'contact') as 'contact' | 'agent' | 'ai_bot',
+            senderName:
+              msg.senderName ||
+              (msg.sender === 'contact' ? t.contactName : currentAgent.name),
+            text: msg.text || '',
+            timestamp: timeStr,
+            status: 'delivered' as const,
+          };
+          return {
+            ...t,
+            lastMessage: mappedMsg.text,
+            lastMessageTime: mappedMsg.timestamp,
+            unreadCount:
+              mappedMsg.sender === 'contact' ? t.unreadCount + 1 : t.unreadCount,
+            messages: [...t.messages, mappedMsg],
+          };
+        })
+      );
+
+      if (msg.sender === 'contact' || !msg.sender) {
+        playAttendanceChime(
+          originChannel === 'whatsapp' ? 'whatsapp' : 'chat',
+          'message'
+        );
+      }
+    };
+
+    const handleCloudRelayPayload = (inner: any) => {
+      if (!inner || typeof inner !== 'object') return;
+      if (inner.type === 'OMNIPULSE_EXTERNAL_SESSION' && inner.session) {
+        processExternalSessions([inner.session]);
+      } else if (
+        inner.type === 'OMNIPULSE_CUSTOMER_MESSAGE' &&
+        inner.sessionId &&
+        inner.message
+      ) {
+        processDirectCustomerMessage(
+          inner.sessionId,
+          inner.message,
+          inner.originChannel
+        );
+      }
+    };
+
     const checkLocalAndRemoteSessions = async () => {
       // 1. Check localStorage external sessions (works on Vercel static hosting & cross-tab)
       try {
@@ -855,9 +988,33 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       } catch {
         // ignore
       }
+
+      // 3. Poll Cloud Real-Time Pub/Sub Relay (ntfy.sh) for external domains / file:// / Vercel static
+      try {
+        const relayRes = await fetch(
+          'https://ntfy.sh/omnipulse_live_hub_2026_v4/json?poll=1&since=5m'
+        );
+        if (relayRes.ok) {
+          const text = await relayRes.text();
+          const lines = text.split('\n').filter(Boolean);
+          for (const line of lines) {
+            try {
+              const outer = JSON.parse(line);
+              if (outer && outer.event === 'message' && outer.message) {
+                const inner = JSON.parse(outer.message);
+                handleCloudRelayPayload(inner);
+              }
+            } catch {
+              // ignore line parse error
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
     };
 
-    // 3. Instant BroadcastChannel listener (< 5ms latency)
+    // 4. Instant BroadcastChannel listener (< 5ms latency)
     let bc: BroadcastChannel | null = null;
     try {
       if (typeof BroadcastChannel !== 'undefined') {
@@ -872,6 +1029,7 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             data.sessionId &&
             data.message
           ) {
+            processDirectCustomerMessage(data.sessionId, data.message);
             checkLocalAndRemoteSessions();
           }
         };
@@ -880,7 +1038,28 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // ignore
     }
 
-    // 4. Native window storage event listener
+    // 5. Instant Cloud Real-Time SSE Listener (ntfy.sh < 100ms across ANY external site / file:// / Vercel)
+    let hubSse: EventSource | null = null;
+    try {
+      if (typeof EventSource !== 'undefined') {
+        hubSse = new EventSource('https://ntfy.sh/omnipulse_live_hub_2026_v4/sse');
+        hubSse.onmessage = (ev) => {
+          try {
+            const outer = JSON.parse(ev.data);
+            if (outer && outer.event === 'message' && outer.message) {
+              const inner = JSON.parse(outer.message);
+              handleCloudRelayPayload(inner);
+            }
+          } catch {
+            // ignore
+          }
+        };
+      }
+    } catch {
+      // ignore
+    }
+
+    // 6. Native window storage event listener
     const handleStorageEvent = (e: StorageEvent) => {
       if (e.key === 'omnipulse_external_sessions' && e.newValue) {
         try {
@@ -891,12 +1070,21 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         } catch {
           // ignore
         }
+      } else if (e.key === 'omnipulse_tenants' && e.newValue) {
+        try {
+          const updatedTenants = JSON.parse(e.newValue);
+          if (Array.isArray(updatedTenants) && updatedTenants.length > 0) {
+            setTenants(updatedTenants);
+          }
+        } catch {
+          // ignore
+        }
       }
     };
 
     window.addEventListener('storage', handleStorageEvent);
     checkLocalAndRemoteSessions();
-    const intervalId = setInterval(checkLocalAndRemoteSessions, 1200);
+    const intervalId = setInterval(checkLocalAndRemoteSessions, 1800);
 
     return () => {
       isMounted = false;
@@ -904,6 +1092,9 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       window.removeEventListener('storage', handleStorageEvent);
       if (bc) {
         bc.close();
+      }
+      if (hubSse) {
+        hubSse.close();
       }
     };
   }, [currentTenantId, currentUserRole, currentAgent.id, departments, tenants]);
@@ -930,7 +1121,12 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       whatsappStatus: 'qrcode',
     };
 
-    setTenants((prev) => [newTenant, ...prev]);
+    setTenants((prev) => {
+      const updated = [newTenant, ...prev];
+      localStorage.setItem('omnipulse_tenants', JSON.stringify(updated));
+      localStorage.setItem('omnipulse_tenants_customized', '1');
+      return updated;
+    });
 
     // Automatically create the Master Admin agent for this newly created company
     const newMasterAgent: Agent = {
@@ -968,40 +1164,104 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateTenant = (tenantId: string, updates: Partial<TenantSystem>) => {
-    setTenants((prev) =>
-      prev.map((t) => (t.id === tenantId ? { ...t, ...updates } : t))
-    );
-
-    // If current tenant is being updated, also sync gateway phone number if changed
-    if (tenantId === currentTenantId && updates.primaryPhoneNumber) {
-      setGatewayConfig((prev) => ({
-        ...prev,
-        primaryPhoneNumber: updates.primaryPhoneNumber!,
-      }));
+    const cleanedUpdates: Partial<TenantSystem> = { ...updates };
+    if (typeof cleanedUpdates.primaryPhoneNumber === 'string') {
+      cleanedUpdates.primaryPhoneNumber = cleanedUpdates.primaryPhoneNumber.trim();
     }
 
-    // Sync Master Admin agent in the agents list if email, password, or name changed
-    if (updates.masterAdminEmail || updates.masterAdminName || updates.masterAdminPassword) {
-      setAgents((prev) =>
-        prev.map((a) =>
-          a.isMasterAdmin
-            ? {
-                ...a,
-                name: updates.masterAdminName || a.name,
-                email: updates.masterAdminEmail || a.email,
-                password: updates.masterAdminPassword || a.password,
-              }
-            : a
-        )
+    setTenants((prev) => {
+      const updated = prev.map((t) =>
+        t.id === tenantId ? { ...t, ...cleanedUpdates } : t
       );
+      localStorage.setItem('omnipulse_tenants', JSON.stringify(updated));
+      localStorage.setItem('omnipulse_tenants_customized', '1');
+      fetch('/api/storage/tenants', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenants: updated }),
+      }).catch(() => {});
+      return updated;
+    });
+
+    // If current tenant is being updated, also sync gateway phone number & engine if changed
+    if (tenantId === currentTenantId) {
+      setGatewayConfig((prev) => {
+        const next = {
+          ...prev,
+          ...(cleanedUpdates.primaryPhoneNumber
+            ? { primaryPhoneNumber: cleanedUpdates.primaryPhoneNumber }
+            : {}),
+          ...(cleanedUpdates.whatsappEngine
+            ? { activeEngine: cleanedUpdates.whatsappEngine }
+            : {}),
+        };
+        localStorage.setItem('omnipulse_gateway', JSON.stringify(next));
+        return next;
+      });
+    }
+
+    // If primaryPhoneNumber or name changed, also keep WebGadgetConfig subtitle updated for this company
+    if (cleanedUpdates.primaryPhoneNumber || cleanedUpdates.name) {
+      setTenantGadgetConfigs((prev) => {
+        const existingCfg = prev[tenantId];
+        if (!existingCfg) return prev;
+        const targetT = tenants.find((t) => t.id === tenantId);
+        const compName = cleanedUpdates.name || targetT?.name || 'Equipe';
+        const compPhone =
+          cleanedUpdates.primaryPhoneNumber || targetT?.primaryPhoneNumber || '';
+        const next = {
+          ...prev,
+          [tenantId]: {
+            ...existingCfg,
+            brandTitle: cleanedUpdates.name
+              ? `Atendimento ${compName}`
+              : existingCfg.brandTitle,
+            brandSubtitle: `${compName} Online • WhatsApp ${compPhone}`,
+          },
+        };
+        localStorage.setItem('omnipulse_tenant_gadgets', JSON.stringify(next));
+        return next;
+      });
+    }
+
+    // Sync Master Admin agent in the agents list for THIS tenant if email, password, name, or phone changed
+    if (
+      cleanedUpdates.masterAdminEmail ||
+      cleanedUpdates.masterAdminName ||
+      cleanedUpdates.masterAdminPassword ||
+      cleanedUpdates.primaryPhoneNumber
+    ) {
+      setAgents((prev) => {
+        const nextAgents = prev.map((a) => {
+          const belongsToTenant =
+            a.tenantId === tenantId ||
+            (!a.tenantId && tenantId === 'tenant-omnipulse');
+          if (belongsToTenant && a.isMasterAdmin) {
+            return {
+              ...a,
+              name: cleanedUpdates.masterAdminName || a.name,
+              email: cleanedUpdates.masterAdminEmail || a.email,
+              password: cleanedUpdates.masterAdminPassword || a.password,
+              phone: cleanedUpdates.primaryPhoneNumber || a.phone,
+            };
+          }
+          return a;
+        });
+        localStorage.setItem('omnipulse_agents', JSON.stringify(nextAgents));
+        return nextAgents;
+      });
     }
 
     addAuditEvent({
       type: 'config',
-      title: 'Configurações de Acesso & Empresa Atualizadas',
-      description: `Credenciais de acesso e parâmetros do sistema [${tenantId}] foram salvos na administração.`,
+      title: 'Dados da Empresa & Telefone WhatsApp Atualizados',
+      description: `Parâmetros, linha WhatsApp (${
+        cleanedUpdates.primaryPhoneNumber || 'mantida'
+      }) e credenciais da empresa [${
+        cleanedUpdates.name || tenantId
+      }] foram salvos com sucesso.`,
       author: 'Administração Master',
-      badge: 'Segurança',
+      badge: 'Persistência',
     });
   };
 
@@ -1248,18 +1508,11 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setActiveView('superadmin');
   };
 
-  const updatePrimaryPhoneNumber = (newPhone: string) => {
-    setGatewayConfig((prev) => ({
-      ...prev,
-      primaryPhoneNumber: newPhone,
-    }));
-    addAuditEvent({
-      type: 'config',
-      title: 'Número WhatsApp de Origem Atualizado',
-      description: `Instância WhatsApp atualizada para o número: ${newPhone}.`,
-      author: currentAgent.name,
-      badge: 'Conexão',
-    });
+  const updatePrimaryPhoneNumber = (newPhone: string, targetTenantId?: string) => {
+    const cleaned = newPhone.trim();
+    if (!cleaned) return;
+    const effectiveTenantId = targetTenantId || currentTenantId;
+    updateTenant(effectiveTenantId, { primaryPhoneNumber: cleaned });
   };
 
   const updateWebGadgetConfig = (updates: Partial<WebGadgetConfig>) => {
@@ -1730,9 +1983,22 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     fetch(`/api/webhook/web-chat/${encodeURIComponent(ticketId)}/message`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
       body: JSON.stringify(externalMsgPayload),
     }).catch(() => {});
+
+    // Also publish attendant reply to Cloud Real-Time Pub/Sub (ntfy.sh) so external widgets on any domain/file:// receive it immediately
+    if (sender === 'agent' || sender === 'ai_bot') {
+      fetch('https://ntfy.sh/omnipulse_live_hub_2026_v4', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+        body: JSON.stringify({
+          type: 'OMNIPULSE_AGENT_REPLY',
+          sessionId: ticketId,
+          message: externalMsgPayload,
+        }),
+      }).catch(() => {});
+    }
 
     // If message was sent by contact, play incoming message chime & check AI fallback
     if (sender === 'contact') {

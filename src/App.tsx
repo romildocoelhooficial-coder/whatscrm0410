@@ -104,6 +104,9 @@ export default function App() {
     if (embedMode === 'bridge') {
       return <ExternalWidgetEmbedView mode="bridge" />;
     }
+    if (embedMode === 'sync') {
+      return <ExternalWidgetEmbedView mode="sync" />;
+    }
     if (embedMode === 'widget' || isEmbedPath) {
       return <ExternalWidgetEmbedView mode="widget" />;
     }

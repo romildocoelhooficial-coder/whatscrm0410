@@ -56,12 +56,22 @@ export const SuperAdminView: React.FC = () => {
   const [showSuperPass, setShowSuperPass] = useState(false);
   const [superSuccessMsg, setSuperSuccessMsg] = useState<string | null>(null);
 
-  // Tenant Admin Master Credentials modal
+  // Tenant Admin Master & Company Phone/Info modal
   const [editingTenant, setEditingTenant] = useState<TenantSystem | null>(null);
+  const [tenantCompanyName, setTenantCompanyName] = useState('');
+  const [tenantCnpj, setTenantCnpj] = useState('');
+  const [tenantPrimaryPhone, setTenantPrimaryPhone] = useState('');
+  const [tenantInstanceName, setTenantInstanceName] = useState('');
+  const [tenantWhatsappEngine, setTenantWhatsappEngine] = useState<'evolution' | 'uazapi' | 'meta_cloud'>('evolution');
   const [tenantAdminEmail, setTenantAdminEmail] = useState('');
   const [tenantAdminPass, setTenantAdminPass] = useState('');
   const [tenantAdminName, setTenantAdminName] = useState('');
   const [showTenantPass, setShowTenantPass] = useState(false);
+
+  // Inline quick phone editing directly on company card
+  const [inlinePhoneTenantId, setInlinePhoneTenantId] = useState<string | null>(null);
+  const [inlinePhoneValue, setInlinePhoneValue] = useState<string>('');
+  const [savedPhoneToastId, setSavedPhoneToastId] = useState<string | null>(null);
 
   const totalConnectedWhatsApps = tenants.filter((t) => t.whatsappStatus === 'open').length;
   const totalAgentsCount = tenants.reduce((acc, t) => acc + (t.agentCount || 2), 0) + agents.length;
@@ -77,20 +87,39 @@ export const SuperAdminView: React.FC = () => {
 
   const handleOpenEditTenant = (t: TenantSystem) => {
     setEditingTenant(t);
+    setTenantCompanyName(t.name);
+    setTenantCnpj(t.cnpjOrId);
+    setTenantPrimaryPhone(t.primaryPhoneNumber);
+    setTenantInstanceName(t.instanceName);
+    setTenantWhatsappEngine(t.whatsappEngine || 'evolution');
     setTenantAdminEmail(t.masterAdminEmail);
     setTenantAdminPass(t.masterAdminPassword);
     setTenantAdminName(t.masterAdminName);
   };
 
+  const handleSaveInlinePhone = (tenantId: string) => {
+    if (!inlinePhoneValue.trim()) return;
+    updateTenant(tenantId, { primaryPhoneNumber: inlinePhoneValue.trim() });
+    setInlinePhoneTenantId(null);
+    setSavedPhoneToastId(tenantId);
+    setTimeout(() => setSavedPhoneToastId(null), 3500);
+  };
+
   const handleSaveTenantCreds = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingTenant || !tenantAdminEmail.trim() || !tenantAdminPass.trim()) return;
+    if (!editingTenant || !tenantAdminEmail.trim() || !tenantAdminPass.trim() || !tenantPrimaryPhone.trim()) return;
     updateTenant(editingTenant.id, {
+      name: tenantCompanyName.trim() || editingTenant.name,
+      cnpjOrId: tenantCnpj.trim() || editingTenant.cnpjOrId,
+      primaryPhoneNumber: tenantPrimaryPhone.trim(),
+      instanceName: tenantInstanceName.trim() || editingTenant.instanceName,
+      whatsappEngine: tenantWhatsappEngine,
       masterAdminEmail: tenantAdminEmail.trim(),
       masterAdminPassword: tenantAdminPass.trim(),
       masterAdminName: tenantAdminName.trim() || editingTenant.masterAdminName,
     });
-    alert(`Credenciais de acesso do Admin Master da empresa "${editingTenant.name}" atualizadas!`);
+    setSavedPhoneToastId(editingTenant.id);
+    setTimeout(() => setSavedPhoneToastId(null), 4000);
     setEditingTenant(null);
   };
 
@@ -406,27 +435,90 @@ export const SuperAdminView: React.FC = () => {
                     </span>
                   </div>
 
-                  {/* WhatsApp Line Status Card */}
-                  <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200/80 mb-3 space-y-1.5 text-xs">
+                  {/* WhatsApp Line Status Card with Direct Inline Phone Editor */}
+                  <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200/80 mb-3 space-y-2 text-xs">
                     <div className="flex items-center justify-between">
                       <span className="text-[10px] text-slate-500 font-semibold uppercase flex items-center gap-1">
                         <Phone className="w-3 h-3 text-emerald-600" />
-                        Linha WhatsApp Dedicada
+                        Telefone Principal / WhatsApp
                       </span>
-                      <span
-                        className={`text-[9px] font-bold px-1.5 py-0.2 rounded-full uppercase ${
-                          t.whatsappStatus === 'open'
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : 'bg-amber-100 text-amber-800'
-                        }`}
-                      >
-                        {t.whatsappStatus === 'open' ? 'Online' : 'Aguardando QR'}
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        {savedPhoneToastId === t.id && (
+                          <span className="text-[9px] font-bold bg-emerald-600 text-white px-2 py-0.5 rounded-full flex items-center gap-0.5">
+                            <Check className="w-2.5 h-2.5" /> Salvo!
+                          </span>
+                        )}
+                        <span
+                          className={`text-[9px] font-bold px-1.5 py-0.2 rounded-full uppercase ${
+                            t.whatsappStatus === 'open'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {t.whatsappStatus === 'open' ? 'Online' : 'Aguardando QR'}
+                        </span>
+                      </div>
                     </div>
 
-                    <div className="font-mono font-bold text-slate-900 text-xs flex items-center justify-between">
-                      <span>{t.primaryPhoneNumber}</span>
-                      <span className="text-[10px] text-slate-500 font-bold flex items-center gap-1">
+                    {inlinePhoneTenantId === t.id ? (
+                      <div className="space-y-1.5 pt-0.5">
+                        <input
+                          type="text"
+                          value={inlinePhoneValue}
+                          onChange={(e) => setInlinePhoneValue(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleSaveInlinePhone(t.id);
+                            } else if (e.key === 'Escape') {
+                              setInlinePhoneTenantId(null);
+                            }
+                          }}
+                          placeholder="+55 11 98765-4321"
+                          autoFocus
+                          className="w-full px-2.5 py-1.5 bg-white border-2 border-emerald-500 rounded-xl font-mono text-xs font-bold text-slate-900 focus:outline-none"
+                        />
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setInlinePhoneTenantId(null)}
+                            className="px-2.5 py-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-[10px] font-bold cursor-pointer"
+                          >
+                            Cancelar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleSaveInlinePhone(t.id)}
+                            className="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-bold flex items-center gap-1 cursor-pointer shadow-2xs"
+                          >
+                            <Check className="w-3 h-3" />
+                            Salvar Telefone
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="font-mono font-bold text-slate-900 text-xs flex items-center justify-between gap-2 bg-white px-2.5 py-1.5 rounded-xl border border-slate-200/80">
+                        <span className="truncate">{t.primaryPhoneNumber}</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setInlinePhoneTenantId(t.id);
+                            setInlinePhoneValue(t.primaryPhoneNumber);
+                          }}
+                          className="px-2 py-0.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg text-[10px] font-sans font-bold flex items-center gap-1 shrink-0 transition-colors cursor-pointer"
+                          title="Editar número de telefone principal / WhatsApp desta empresa"
+                        >
+                          <Pencil className="w-2.5 h-2.5 text-emerald-600" />
+                          Editar Telefone
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-between text-[10px] text-slate-400 pt-0.5">
+                      <span className="truncate">
+                        Instância: <code className="text-slate-600 font-bold">{t.instanceName}</code>
+                      </span>
+                      <span className="text-[10px] text-slate-500 font-bold flex items-center gap-1 shrink-0">
                         {t.whatsappEngine === 'evolution' ? (
                           <>
                             <Radio className="w-3 h-3 text-emerald-600" /> Evolution v2
@@ -441,10 +533,6 @@ export const SuperAdminView: React.FC = () => {
                           </>
                         )}
                       </span>
-                    </div>
-
-                    <div className="text-[10px] text-slate-400 truncate">
-                      Instância: <code className="text-slate-600 font-bold">{t.instanceName}</code>
                     </div>
                   </div>
 
@@ -558,11 +646,11 @@ export const SuperAdminView: React.FC = () => {
 
                   <button
                     onClick={() => handleOpenEditTenant(t)}
-                    className="py-2 px-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs flex items-center justify-center gap-1 transition-colors"
-                    title="Editar e-mail e senha do Admin Master desta empresa"
+                    className="py-2 px-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs flex items-center justify-center gap-1 transition-colors cursor-pointer"
+                    title="Editar telefone WhatsApp, dados da empresa e credenciais do Admin Master"
                   >
-                    <KeyRound className="w-3.5 h-3.5 text-purple-600" />
-                    Acesso
+                    <Pencil className="w-3.5 h-3.5 text-emerald-600" />
+                    Editar Empresa
                   </button>
 
                   <button
@@ -643,11 +731,32 @@ export const SuperAdminView: React.FC = () => {
                         Admin Master
                       </span>
                     </td>
-                    <td className="py-3 px-3 font-mono text-slate-700">{t.primaryPhoneNumber}</td>
+                    <td className="py-3 px-3">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenEditTenant(t)}
+                        className="font-mono font-bold text-slate-800 hover:text-emerald-700 flex items-center gap-1.5 group cursor-pointer"
+                        title="Clique para editar o telefone principal / WhatsApp desta empresa"
+                      >
+                        <span>{t.primaryPhoneNumber}</span>
+                        <Pencil className="w-3 h-3 text-emerald-600 opacity-75 group-hover:opacity-100" />
+                      </button>
+                    </td>
                     <td className="py-3 px-3 font-mono font-bold text-slate-700">{t.masterAdminPassword}</td>
                     <td className="py-3 px-3">
-                      <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block mr-1.5"></span>
-                      Ativo
+                      <div className="flex items-center justify-between gap-2">
+                        <span>
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block mr-1.5"></span>
+                          Ativo
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenEditTenant(t)}
+                          className="px-2 py-0.5 bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-800 rounded-lg text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                        >
+                          <Pencil className="w-2.5 h-2.5" /> Editar
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -816,17 +925,19 @@ export const SuperAdminView: React.FC = () => {
         </div>
       )}
 
-      {/* Modal for Editing Tenant Master Admin Credentials */}
+      {/* Modal for Editing Company Info, WhatsApp Phone & Master Admin Credentials */}
       {editingTenant && (
         <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-in fade-in duration-150">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-2xl bg-purple-950 text-purple-300 flex items-center justify-center font-bold">
-                  <KeyRound className="w-4 h-4" />
+                <div className="w-9 h-9 rounded-2xl bg-emerald-600 text-white flex items-center justify-center font-bold">
+                  <Phone className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="font-extrabold text-sm text-slate-900">Credenciais do Admin Master</h3>
+                  <h3 className="font-extrabold text-sm text-slate-900">
+                    Editar Empresa, Telefone WhatsApp & Credenciais
+                  </h3>
                   <p className="text-[11px] text-slate-500">{editingTenant.name}</p>
                 </div>
               </div>
@@ -840,61 +951,138 @@ export const SuperAdminView: React.FC = () => {
             </div>
 
             <form onSubmit={handleSaveTenantCreds} className="space-y-3.5 text-xs">
-              <div>
-                <label className="block text-slate-700 font-bold mb-1">Nome do Gestor Master *</label>
+              {/* Highlighted Primary Phone & WhatsApp Field */}
+              <div className="p-3.5 bg-emerald-50/80 border border-emerald-200 rounded-2xl space-y-2">
+                <label className="block text-emerald-950 font-extrabold text-xs flex items-center gap-1.5">
+                  <Phone className="w-3.5 h-3.5 text-emerald-600" />
+                  Telefone Principal / Linha WhatsApp da Empresa *
+                </label>
                 <input
                   type="text"
                   required
-                  value={tenantAdminName}
-                  onChange={(e) => setTenantAdminName(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                  value={tenantPrimaryPhone}
+                  onChange={(e) => setTenantPrimaryPhone(e.target.value)}
+                  placeholder="+55 11 98765-4321"
+                  className="w-full p-2.5 bg-white border-2 border-emerald-400 rounded-xl font-mono font-bold text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 />
+                <p className="text-[10px] text-emerald-800">
+                  Este número é sincronizado automaticamente com a instância de WhatsApp, painel Admin e códigos do Gadget Web da empresa.
+                </p>
               </div>
 
-              <div>
-                <label className="block text-slate-700 font-bold mb-1">E-mail de Login do Admin Master *</label>
-                <input
-                  type="email"
-                  required
-                  value={tenantAdminEmail}
-                  onChange={(e) => setTenantAdminEmail(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-[11px] text-slate-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-slate-700 font-bold mb-1">Senha de Acesso *</label>
-                <div className="relative">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-700 font-bold mb-1">Nome da Empresa *</label>
                   <input
-                    type={showTenantPass ? 'text' : 'password'}
+                    type="text"
                     required
-                    value={tenantAdminPass}
-                    onChange={(e) => setTenantAdminPass(e.target.value)}
-                    className="w-full p-2.5 pr-9 bg-slate-50 border border-slate-200 rounded-xl font-mono text-[11px] text-slate-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                    value={tenantCompanyName}
+                    onChange={(e) => setTenantCompanyName(e.target.value)}
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                   />
-                  <button
-                    type="button"
-                    onClick={() => setShowTenantPass(!showTenantPass)}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-                  >
-                    {showTenantPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
+                </div>
+                <div>
+                  <label className="block text-slate-700 font-bold mb-1">CNPJ ou Identificador</label>
+                  <input
+                    type="text"
+                    value={tenantCnpj}
+                    onChange={(e) => setTenantCnpj(e.target.value)}
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-[11px] text-slate-900 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  />
                 </div>
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-700 font-bold mb-1">Instância WhatsApp</label>
+                  <input
+                    type="text"
+                    value={tenantInstanceName}
+                    onChange={(e) => setTenantInstanceName(e.target.value)}
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-[11px] text-slate-900 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-700 font-bold mb-1">Motor WhatsApp</label>
+                  <select
+                    value={tenantWhatsappEngine}
+                    onChange={(e) =>
+                      setTenantWhatsappEngine(e.target.value as 'evolution' | 'uazapi' | 'meta_cloud')
+                    }
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  >
+                    <option value="evolution">Evolution API v2</option>
+                    <option value="uazapi">Uazapi Cloud</option>
+                    <option value="meta_cloud">Meta Cloud API Oficial</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-slate-100">
+                <span className="text-[10px] font-extrabold uppercase tracking-wider text-purple-700 block mb-2">
+                  Credenciais do Administrador Master da Empresa
+                </span>
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-slate-700 font-bold mb-1">Nome do Gestor Master *</label>
+                    <input
+                      type="text"
+                      required
+                      value={tenantAdminName}
+                      onChange={(e) => setTenantAdminName(e.target.value)}
+                      className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-slate-700 font-bold mb-1">E-mail de Login *</label>
+                      <input
+                        type="email"
+                        required
+                        value={tenantAdminEmail}
+                        onChange={(e) => setTenantAdminEmail(e.target.value)}
+                        className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-[11px] text-slate-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-slate-700 font-bold mb-1">Senha de Acesso *</label>
+                      <div className="relative">
+                        <input
+                          type={showTenantPass ? 'text' : 'password'}
+                          required
+                          value={tenantAdminPass}
+                          onChange={(e) => setTenantAdminPass(e.target.value)}
+                          className="w-full p-2.5 pr-9 bg-slate-50 border border-slate-200 rounded-xl font-mono text-[11px] text-slate-900 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowTenantPass(!showTenantPass)}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                        >
+                          {showTenantPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setEditingTenant(null)}
-                  className="px-3.5 py-2 border border-slate-200 rounded-xl text-slate-700 font-medium hover:bg-slate-50"
+                  className="px-3.5 py-2 border border-slate-200 rounded-xl text-slate-700 font-medium hover:bg-slate-50 cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold shadow-sm transition-colors"
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold shadow-sm transition-colors flex items-center gap-1.5 cursor-pointer"
                 >
-                  Salvar Credenciais
+                  <Check className="w-4 h-4" />
+                  Salvar Telefone & Dados da Empresa
                 </button>
               </div>
             </form>

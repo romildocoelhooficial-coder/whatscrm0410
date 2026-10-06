@@ -26,8 +26,9 @@ export interface ExternalRealtimeSession {
   messages: ExternalRealtimeMessage[];
 }
 
-const STORAGE_KEY = 'omnipulse_external_sessions';
-const CHANNEL_NAME = 'omnipulse_crm_realtime';
+export const STORAGE_KEY = 'omnipulse_external_sessions';
+export const CHANNEL_NAME = 'omnipulse_crm_realtime';
+export const PUBSUB_HUB_TOPIC = 'omnipulse_live_hub_2026_v4';
 
 export function saveExternalSessionToStorage(session: ExternalRealtimeSession) {
   try {
@@ -35,7 +36,14 @@ export function saveExternalSessionToStorage(session: ExternalRealtimeSession) {
     const list: ExternalRealtimeSession[] = raw ? JSON.parse(raw) : [];
     const idx = list.findIndex((s) => s.sessionId === session.sessionId);
     if (idx >= 0) {
-      list[idx] = session;
+      const existingMsgs = list[idx].messages || [];
+      const mergedMsgs = [...existingMsgs];
+      (session.messages || []).forEach((m) => {
+        if (!mergedMsgs.some((em) => em.id === m.id)) {
+          mergedMsgs.push(m);
+        }
+      });
+      list[idx] = { ...list[idx], ...session, messages: mergedMsgs, updatedAt: Date.now() };
     } else {
       list.unshift(session);
     }
@@ -68,36 +76,228 @@ export function appendExternalMessageToStorage(
   return null;
 }
 
-export const ExternalWidgetEmbedView: React.FC<{ mode: 'bridge' | 'widget' }> = ({
-  mode,
-}) => {
+/**
+ * Publishes an event to the zero-CORS public real-time relay (ntfy.sh) using text/plain
+ * so browsers NEVER trigger an OPTIONS preflight. Works from file://, cross-origin iframes,
+ * external domains, Vercel static hosting, and AI Studio preview.
+ */
+export function publishToRealtimeCloudRelay(payload: any, tenantSlug?: string) {
+  try {
+    const bodyStr = JSON.stringify(payload);
+    fetch(`https://ntfy.sh/${PUBSUB_HUB_TOPIC}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+      body: bodyStr,
+    }).catch(() => {});
+
+    if (tenantSlug) {
+      const cleanTenant = String(tenantSlug).replace(/[^a-zA-Z0-9_-]/g, '');
+      if (cleanTenant) {
+        fetch(`https://ntfy.sh/omnipulse_live_2026_${cleanTenant}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+          body: bodyStr,
+        }).catch(() => {});
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * When embedded inside a third-party iframe where Chrome partitions localStorage/BroadcastChannel,
+ * opens a tiny self-closing top-level window on the CRM's first-party origin during the user click
+ * gesture so the session is written directly to unpartitioned first-party storage & BroadcastChannel.
+ */
+export function triggerFirstPartySyncPulse(apiOrigin: string, payload: any) {
+  try {
+    const encoded = encodeURIComponent(JSON.stringify(payload));
+    const syncUrl = `${apiOrigin}/?embed=sync&data=${encoded}`;
+    const win = window.open(
+      syncUrl,
+      'omnipulse_sync_pulse',
+      'width=80,height=60,left=9999,top=9999,menubar=no,toolbar=no,location=no,status=no'
+    );
+    if (win) {
+      setTimeout(() => {
+        try {
+          win.close();
+        } catch {
+          // ignore
+        }
+      }, 450);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export const ExternalWidgetEmbedView: React.FC<{
+  mode: 'bridge' | 'widget' | 'sync';
+}> = ({ mode }) => {
   const params =
     typeof window !== 'undefined'
       ? new URLSearchParams(window.location.search)
       : new URLSearchParams();
 
-  const tenantSlug = params.get('tenant') || params.get('empresa') || '';
+  const tenantSlug = params.get('tenant') || params.get('tenantSlug') || params.get('empresa') || '';
   const tenantId = params.get('tenantId') || '';
-  const companyName = params.get('company') || '';
+  const companyName = params.get('company') || params.get('companyName') || '';
   const brand =
     params.get('brand') ||
     (companyName ? `Atendimento ${companyName}` : 'Atendimento Online');
   const primaryColor = params.get('color') || '#10B981';
   const initialSessionId = params.get('sessionId') || '';
-  const initialChannel =
-    params.get('channel') === 'whatsapp' ? 'whatsapp' : 'chat';
+  const rawChannel = params.get('originChannel') || params.get('channel') || 'chat';
+  const initialChannel: 'chat' | 'whatsapp' =
+    rawChannel === 'whatsapp' ? 'whatsapp' : 'chat';
 
   const [channel, setChannel] = useState<'chat' | 'whatsapp'>(initialChannel);
-  const [name, setName] = useState('');
-  const [phone, setPhone] = useState('');
-  const [email, setEmail] = useState('');
-  const [department, setDepartment] = useState('Comercial & Vendas');
-  const [messageInput, setMessageInput] = useState('');
+  const [name, setName] = useState(params.get('name') || '');
+  const [phone, setPhone] = useState(params.get('whatsapp') || params.get('phone') || '');
+  const [email, setEmail] = useState(params.get('email') || '');
+  const [department, setDepartment] = useState(
+    params.get('departmentId') || params.get('department') || 'Comercial & Vendas'
+  );
+  const [messageInput, setMessageInput] = useState(params.get('message') || '');
 
   const [activeSessionId, setActiveSessionId] = useState<string>(initialSessionId);
   const [messages, setMessages] = useState<ExternalRealtimeMessage[]>([]);
   const [replyInput, setReplyInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const autoStartedRef = useRef(false);
+
+  // ============================================================================
+  // 1. FIRST-PARTY UNPARTITIONED SYNC PULSE MODE (/?embed=sync&data=...)
+  // ============================================================================
+  useEffect(() => {
+    if (mode !== 'sync') return;
+    const rawData = params.get('data');
+    if (rawData) {
+      try {
+        const parsed = JSON.parse(rawData);
+        let bc: BroadcastChannel | null = null;
+        try {
+          if (typeof BroadcastChannel !== 'undefined') {
+            bc = new BroadcastChannel(CHANNEL_NAME);
+          }
+        } catch {
+          // ignore
+        }
+
+        if (parsed.type === 'OMNIPULSE_EXTERNAL_SESSION' && parsed.session) {
+          const session: ExternalRealtimeSession = parsed.session;
+          saveExternalSessionToStorage(session);
+          try {
+            bc?.postMessage({ type: 'OMNIPULSE_EXTERNAL_SESSION', session });
+          } catch {
+            // ignore
+          }
+          publishToRealtimeCloudRelay(
+            { type: 'OMNIPULSE_EXTERNAL_SESSION', session },
+            session.tenantSlug
+          );
+          fetch('/api/webhook/web-lead', {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+            body: JSON.stringify({
+              sessionId: session.sessionId,
+              protocol: session.protocol,
+              tenantId: session.tenantId,
+              tenantSlug: session.tenantSlug,
+              companyName: session.companyName,
+              name: session.name,
+              phone: session.phone,
+              email: session.email,
+              department: session.department,
+              message: session.messages?.[0]?.text || '',
+              originChannel: session.originChannel,
+            }),
+          }).catch(() => {});
+        } else if (
+          parsed.type === 'OMNIPULSE_CUSTOMER_MESSAGE' &&
+          parsed.sessionId &&
+          parsed.message
+        ) {
+          appendExternalMessageToStorage(parsed.sessionId, parsed.message);
+          try {
+            bc?.postMessage({
+              type: 'OMNIPULSE_CUSTOMER_MESSAGE',
+              sessionId: parsed.sessionId,
+              message: parsed.message,
+            });
+          } catch {
+            // ignore
+          }
+          publishToRealtimeCloudRelay({
+            type: 'OMNIPULSE_CUSTOMER_MESSAGE',
+            sessionId: parsed.sessionId,
+            message: parsed.message,
+          });
+          fetch(
+            `/api/webhook/web-chat/${encodeURIComponent(parsed.sessionId)}/message`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+              body: JSON.stringify(parsed.message),
+            }
+          ).catch(() => {});
+        }
+
+        setTimeout(() => {
+          try {
+            bc?.close();
+            window.close();
+          } catch {
+            // ignore
+          }
+        }, 180);
+      } catch {
+        // ignore parse errors
+      }
+    }
+  }, [mode]);
+
+  // ============================================================================
+  // 2. AUTO-START FROM PURE HTML FORM SUBMISSION (/?embed=widget&autoStart=1&...)
+  // ============================================================================
+  useEffect(() => {
+    if (mode !== 'widget' || autoStartedRef.current) return;
+    const autoStart = params.get('autoStart');
+    const urlName = (params.get('name') || '').trim();
+    const urlPhone = (params.get('whatsapp') || params.get('phone') || '').trim();
+    const urlMsg = (params.get('message') || '').trim();
+
+    if (autoStart === '1' && urlName && (urlPhone || urlMsg)) {
+      autoStartedRef.current = true;
+      dispatchNewExternalSession({
+        customName: urlName,
+        customPhone: urlPhone || '+55 11 99999-0000',
+        customEmail: (params.get('email') || '').trim(),
+        customDept:
+          (params.get('departmentId') || params.get('department') || 'Comercial & Vendas').trim(),
+        customMsg: urlMsg || 'Olá! Gostaria de iniciar um atendimento.',
+        customChannel: initialChannel,
+        skipPopupSync: true, // Already in a top-level window!
+      });
+    } else if (initialSessionId) {
+      autoStartedRef.current = true;
+      // Load existing session from localStorage if available
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (raw) {
+          const list: ExternalRealtimeSession[] = JSON.parse(raw);
+          const found = list.find((s) => s.sessionId === initialSessionId);
+          if (found && Array.isArray(found.messages)) {
+            setMessages(found.messages);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }, [mode]);
 
   useEffect(() => {
     if (messagesEndRef.current) {
@@ -105,8 +305,12 @@ export const ExternalWidgetEmbedView: React.FC<{ mode: 'bridge' | 'widget' }> = 
     }
   }, [messages.length]);
 
-  // Bridge Mode & Widget Mode: Listen for postMessage (from parent external site script), BroadcastChannel, and localStorage
+  // ============================================================================
+  // 3. REAL-TIME LISTENERS (BroadcastChannel + localStorage + postMessage + Cloud SSE)
+  // ============================================================================
   useEffect(() => {
+    if (mode === 'sync') return;
+
     let bc: BroadcastChannel | null = null;
     try {
       if (typeof BroadcastChannel !== 'undefined') {
@@ -116,7 +320,6 @@ export const ExternalWidgetEmbedView: React.FC<{ mode: 'bridge' | 'widget' }> = 
       // ignore
     }
 
-    // 1. Handle messages from Parent External Website (<script> tag postMessage)
     const handleWindowMessage = (event: MessageEvent) => {
       const data = event.data;
       if (!data || typeof data !== 'object') return;
@@ -129,12 +332,16 @@ export const ExternalWidgetEmbedView: React.FC<{ mode: 'bridge' | 'widget' }> = 
         } catch {
           // ignore
         }
-        // Also forward to backend API if available
+        publishToRealtimeCloudRelay(
+          { type: 'OMNIPULSE_EXTERNAL_SESSION', session },
+          session.tenantSlug
+        );
         fetch('/api/webhook/web-lead', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
           body: JSON.stringify({
             sessionId: session.sessionId,
+            protocol: session.protocol,
             tenantId: session.tenantId,
             tenantSlug: session.tenantSlug,
             companyName: session.companyName,
@@ -161,11 +368,16 @@ export const ExternalWidgetEmbedView: React.FC<{ mode: 'bridge' | 'widget' }> = 
         } catch {
           // ignore
         }
+        publishToRealtimeCloudRelay({
+          type: 'OMNIPULSE_CUSTOMER_MESSAGE',
+          sessionId: data.sessionId,
+          message: data.message,
+        });
         fetch(
           `/api/webhook/web-chat/${encodeURIComponent(data.sessionId)}/message`,
           {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
             body: JSON.stringify({
               id: data.message.id,
               sender: 'contact',
@@ -177,44 +389,43 @@ export const ExternalWidgetEmbedView: React.FC<{ mode: 'bridge' | 'widget' }> = 
       }
     };
 
-    // 2. Handle replies from the CRM Attendant via BroadcastChannel
-    const handleBroadcastMessage = (event: MessageEvent) => {
-      const data = event.data;
-      if (!data || typeof data !== 'object') return;
-
-      if (data.type === 'OMNIPULSE_AGENT_REPLY' && data.sessionId && data.message) {
-        // Forward to parent window (in case we are inside the <script>'s hidden bridge iframe)
-        try {
-          if (window.parent && window.parent !== window) {
-            window.parent.postMessage(
-              {
-                type: 'OMNIPULSE_AGENT_REPLY',
-                sessionId: data.sessionId,
-                message: data.message,
-              },
-              '*'
-            );
-          }
-        } catch {
-          // ignore
+    const handleIncomingAgentReply = (sessionId: string, message: ExternalRealtimeMessage) => {
+      if (!sessionId || !message) return;
+      try {
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage(
+            {
+              type: 'OMNIPULSE_AGENT_REPLY',
+              sessionId,
+              message,
+            },
+            '*'
+          );
         }
+      } catch {
+        // ignore
+      }
 
-        // If we are in visual widget mode for this session, append the message
-        if (data.sessionId === activeSessionId) {
-          setMessages((prev) => {
-            if (prev.some((m) => m.id === data.message.id)) return prev;
-            return [...prev, data.message];
-          });
-        }
+      if (sessionId === activeSessionId) {
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === message.id)) return prev;
+          return [...prev, message];
+        });
       }
     };
 
-    // 3. Handle localStorage changes (fallback across tabs/iframes)
+    const handleBroadcastMessage = (event: MessageEvent) => {
+      const data = event.data;
+      if (!data || typeof data !== 'object') return;
+      if (data.type === 'OMNIPULSE_AGENT_REPLY' && data.sessionId && data.message) {
+        handleIncomingAgentReply(data.sessionId, data.message);
+      }
+    };
+
     const handleStorageChange = (e: StorageEvent) => {
       if (e.key === STORAGE_KEY && e.newValue) {
         try {
           const list: ExternalRealtimeSession[] = JSON.parse(e.newValue);
-          // Forward any agent messages to parent window in bridge mode
           if (mode === 'bridge' && window.parent && window.parent !== window) {
             list.forEach((sess) => {
               sess.messages
@@ -243,6 +454,34 @@ export const ExternalWidgetEmbedView: React.FC<{ mode: 'bridge' | 'widget' }> = 
       }
     };
 
+    // Cloud SSE Listener for Agent Replies (works across any domain or file://)
+    let eventSource: EventSource | null = null;
+    try {
+      if (typeof EventSource !== 'undefined') {
+        eventSource = new EventSource(`https://ntfy.sh/${PUBSUB_HUB_TOPIC}/sse`);
+        eventSource.onmessage = (ev) => {
+          try {
+            const outer = JSON.parse(ev.data);
+            if (outer && outer.event === 'message' && outer.message) {
+              const inner = JSON.parse(outer.message);
+              if (
+                inner &&
+                inner.type === 'OMNIPULSE_AGENT_REPLY' &&
+                inner.sessionId &&
+                inner.message
+              ) {
+                handleIncomingAgentReply(inner.sessionId, inner.message);
+              }
+            }
+          } catch {
+            // ignore
+          }
+        };
+      }
+    } catch {
+      // ignore
+    }
+
     window.addEventListener('message', handleWindowMessage);
     window.addEventListener('storage', handleStorageChange);
     if (bc) {
@@ -256,27 +495,31 @@ export const ExternalWidgetEmbedView: React.FC<{ mode: 'bridge' | 'widget' }> = 
         bc.removeEventListener('message', handleBroadcastMessage);
         bc.close();
       }
+      if (eventSource) {
+        eventSource.close();
+      }
     };
   }, [activeSessionId, mode]);
 
-  // Also poll backend API if activeSessionId is set (for cross-device sync)
+  // Poll backend API + Cloud Relay if activeSessionId is set
   useEffect(() => {
-    if (!activeSessionId || mode === 'bridge') return;
+    if (!activeSessionId || mode !== 'widget') return;
     const poll = async () => {
       try {
         const res = await fetch(
           `/api/webhook/web-chat/${encodeURIComponent(activeSessionId)}/messages`
         );
-        if (!res.ok) return;
-        const data = await res.json();
-        if (data && Array.isArray(data.messages) && data.messages.length > 0) {
-          setMessages((prev) => {
-            const existingIds = new Set(prev.map((m) => m.id));
-            const newOnes = data.messages.filter(
-              (m: ExternalRealtimeMessage) => !existingIds.has(m.id)
-            );
-            return newOnes.length > 0 ? [...prev, ...newOnes] : prev;
-          });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && Array.isArray(data.messages) && data.messages.length > 0) {
+            setMessages((prev) => {
+              const existingIds = new Set(prev.map((m) => m.id));
+              const newOnes = data.messages.filter(
+                (m: ExternalRealtimeMessage) => !existingIds.has(m.id)
+              );
+              return newOnes.length > 0 ? [...prev, ...newOnes] : prev;
+            });
+          }
         }
       } catch {
         // ignore
@@ -287,14 +530,38 @@ export const ExternalWidgetEmbedView: React.FC<{ mode: 'bridge' | 'widget' }> = 
     return () => clearInterval(id);
   }, [activeSessionId, mode]);
 
-  // Invisible Bridge Mode for External <script> embeds
   if (mode === 'bridge') {
     return <div style={{ display: 'none' }} aria-hidden="true" />;
   }
 
-  const handleStartCall = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name.trim() || !phone.trim() || !messageInput.trim()) return;
+  if (mode === 'sync') {
+    return (
+      <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center p-4 font-sans text-xs">
+        <div className="text-center space-y-2">
+          <div className="w-8 h-8 rounded-full border-2 border-emerald-400 border-t-transparent animate-spin mx-auto" />
+          <p className="font-bold text-emerald-400">Sincronizando chamado com a central...</p>
+        </div>
+      </div>
+    );
+  }
+
+  const dispatchNewExternalSession = (opts?: {
+    customName?: string;
+    customPhone?: string;
+    customEmail?: string;
+    customDept?: string;
+    customMsg?: string;
+    customChannel?: 'chat' | 'whatsapp';
+    skipPopupSync?: boolean;
+  }) => {
+    const finalName = (opts?.customName ?? name).trim();
+    const finalPhone = (opts?.customPhone ?? phone).trim();
+    const finalEmail = (opts?.customEmail ?? email).trim();
+    const finalDept = (opts?.customDept ?? department).trim();
+    const finalMsg = (opts?.customMsg ?? messageInput).trim();
+    const finalChannel = opts?.customChannel ?? channel;
+
+    if (!finalName || !finalPhone || !finalMsg) return;
 
     const nowMs = Date.now();
     const now = new Date();
@@ -303,25 +570,25 @@ export const ExternalWidgetEmbedView: React.FC<{ mode: 'bridge' | 'widget' }> = 
     ).padStart(2, '0')}`;
     const sId = `ext-${nowMs}-${Math.random().toString(36).slice(2, 6)}`;
     const protocol =
-      channel === 'chat'
+      finalChannel === 'chat'
         ? `OP-CHAT-${nowMs.toString().slice(-4)}`
         : `OP-WA-${nowMs.toString().slice(-4)}`;
 
     const welcomeText =
-      channel === 'whatsapp'
-        ? `Olá ${name.trim()}! 📱 Sua conversa via WhatsApp para ${
+      finalChannel === 'whatsapp'
+        ? `Olá ${finalName}! 📱 Sua conversa via WhatsApp para ${
             companyName || brand
-          } foi iniciada no setor ${department}. Um atendente já foi acionado e responderá aqui mesmo!`
-        : `Olá ${name.trim()}! 💬 Seu atendimento via Chat Online para ${
+          } foi iniciada no setor ${finalDept}. Um atendente já foi acionado e responderá aqui mesmo!`
+        : `Olá ${finalName}! 💬 Seu atendimento via Chat Online para ${
             companyName || brand
-          } foi iniciado no setor ${department}. Um atendente já recebeu o alerta sonoro e responderá por aqui!`;
+          } foi iniciado no setor ${finalDept}. Um atendente já recebeu o alerta sonoro e responderá por aqui!`;
 
     const initialMessages: ExternalRealtimeMessage[] = [
       {
         id: `m-ext-init-${nowMs}`,
         sender: 'contact',
-        senderName: name.trim(),
-        text: messageInput.trim(),
+        senderName: finalName,
+        text: finalMsg,
         timestamp: timeStr,
         createdAt: nowMs,
       },
@@ -341,11 +608,11 @@ export const ExternalWidgetEmbedView: React.FC<{ mode: 'bridge' | 'widget' }> = 
       tenantId,
       tenantSlug,
       companyName,
-      name: name.trim(),
-      phone: phone.trim(),
-      email: email.trim(),
-      department,
-      originChannel: channel,
+      name: finalName,
+      phone: finalPhone,
+      email: finalEmail,
+      department: finalDept,
+      originChannel: finalChannel,
       createdAt: nowMs,
       updatedAt: nowMs,
       messages: initialMessages,
@@ -354,10 +621,10 @@ export const ExternalWidgetEmbedView: React.FC<{ mode: 'bridge' | 'widget' }> = 
     setActiveSessionId(sId);
     setMessages(initialMessages);
 
-    // 1. Save to localStorage (fires storage event in Attendant's CRM tab immediately)
+    // Layer 1: LocalStorage (works when same-origin or top-level window)
     saveExternalSessionToStorage(session);
 
-    // 2. Broadcast on BroadcastChannel (fires instantaneously in Attendant's CRM tab)
+    // Layer 2: BroadcastChannel (instant same-origin sync)
     try {
       if (typeof BroadcastChannel !== 'undefined') {
         const bc = new BroadcastChannel(CHANNEL_NAME);
@@ -368,23 +635,55 @@ export const ExternalWidgetEmbedView: React.FC<{ mode: 'bridge' | 'widget' }> = 
       // ignore
     }
 
-    // 3. Also send to backend webhook API
+    // Layer 3: Cloud Real-Time Pub/Sub Relay (ntfy.sh - works across any external domain, file://, Vercel, AI Studio)
+    publishToRealtimeCloudRelay(
+      { type: 'OMNIPULSE_EXTERNAL_SESSION', session },
+      tenantSlug
+    );
+
+    // Layer 4: Backend Webhook POST (text/plain CORS-simple) + GET Image Beacon
+    const leadPayload = {
+      sessionId: sId,
+      protocol,
+      tenantId,
+      tenantSlug,
+      companyName,
+      name: session.name,
+      phone: session.phone,
+      email: session.email,
+      department: session.department,
+      message: finalMsg,
+      originChannel: finalChannel,
+    };
+
     fetch('/api/webhook/web-lead', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        sessionId: sId,
-        tenantId,
-        tenantSlug,
-        companyName,
-        name: session.name,
-        phone: session.phone,
-        email: session.email,
-        department: session.department,
-        message: messageInput.trim(),
-        originChannel: channel,
-      }),
+      headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+      body: JSON.stringify(leadPayload),
     }).catch(() => {});
+
+    try {
+      const beacon = new Image();
+      beacon.src = `/api/webhook/web-lead-beacon?d=${encodeURIComponent(
+        JSON.stringify(leadPayload)
+      )}&_t=${nowMs}`;
+    } catch {
+      // ignore
+    }
+
+    // Layer 5: If running inside a third-party iframe (window.self !== window.top),
+    // trigger a First-Party Unpartitioned Sync Pulse so Chrome's storage partitioning is bypassed 100%
+    if (!opts?.skipPopupSync && typeof window !== 'undefined' && window.self !== window.top) {
+      triggerFirstPartySyncPulse(window.location.origin, {
+        type: 'OMNIPULSE_EXTERNAL_SESSION',
+        session,
+      });
+    }
+  };
+
+  const handleStartCall = (e: React.FormEvent) => {
+    e.preventDefault();
+    dispatchNewExternalSession();
   };
 
   const handleSendReply = (e: React.FormEvent) => {
@@ -426,11 +725,20 @@ export const ExternalWidgetEmbedView: React.FC<{ mode: 'bridge' | 'widget' }> = 
       // ignore
     }
 
+    publishToRealtimeCloudRelay(
+      {
+        type: 'OMNIPULSE_CUSTOMER_MESSAGE',
+        sessionId: activeSessionId,
+        message: newMsg,
+      },
+      tenantSlug
+    );
+
     fetch(
       `/api/webhook/web-chat/${encodeURIComponent(activeSessionId)}/message`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
         body: JSON.stringify({
           id: newMsg.id,
           sender: 'contact',

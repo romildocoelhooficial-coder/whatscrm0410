@@ -295,17 +295,71 @@ export const WebGadgetView: React.FC = () => {
       messages: initMsgs
     };
 
+    fetch('https://ntfy.sh/omnipulse_live_hub_2026_v4', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+      body: JSON.stringify({ type: 'OMNIPULSE_EXTERNAL_SESSION', session: sessionObj })
+    }).catch(function() {});
+
     try {
       if (bridgeFrame && bridgeFrame.contentWindow) {
         bridgeFrame.contentWindow.postMessage({ type: 'OMNIPULSE_EXTERNAL_SESSION', session: sessionObj }, '*');
       }
     } catch(err) {}
 
+    try {
+      var beaconImg = new Image();
+      beaconImg.src = config.apiOrigin + '/api/webhook/web-lead-beacon?d=' + encodeURIComponent(JSON.stringify({
+        sessionId: activeSessionId,
+        protocol: protocol,
+        tenantId: config.tenantId,
+        tenantSlug: config.tenantSlug,
+        companyName: config.companyName,
+        name: name,
+        phone: phone,
+        email: email,
+        department: dept,
+        message: msg,
+        originChannel: currentChannel
+      })) + '&_t=' + nowMs;
+    } catch(err) {}
+
+    if (window.location.origin !== config.apiOrigin) {
+      try {
+        var syncWin = window.open(
+          config.apiOrigin + '/?embed=sync&data=' + encodeURIComponent(JSON.stringify({ type: 'OMNIPULSE_EXTERNAL_SESSION', session: sessionObj })),
+          'omnipulse_sync_pulse',
+          'width=80,height=60,left=9999,top=9999,menubar=no,toolbar=no,location=no,status=no'
+        );
+        if (syncWin) {
+          setTimeout(function() { try { syncWin.close(); } catch(e) {} }, 450);
+        }
+      } catch(err) {}
+    }
+
+    try {
+      if (typeof EventSource !== 'undefined') {
+        var es = new EventSource('https://ntfy.sh/omnipulse_live_hub_2026_v4/sse');
+        es.onmessage = function(ev) {
+          try {
+            var outer = JSON.parse(ev.data);
+            if (outer && outer.event === 'message' && outer.message) {
+              var inner = JSON.parse(outer.message);
+              if (inner && inner.type === 'OMNIPULSE_AGENT_REPLY' && inner.sessionId === activeSessionId && inner.message) {
+                appendBubble(inner.message.id, inner.message.sender, inner.message.senderName, inner.message.text);
+              }
+            }
+          } catch(e) {}
+        };
+      }
+    } catch(err) {}
+
     fetch(config.webhookUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
       body: JSON.stringify({
         sessionId: activeSessionId,
+        protocol: protocol,
         tenantId: config.tenantId,
         tenantSlug: config.tenantSlug,
         companyName: config.companyName,
@@ -321,7 +375,9 @@ export const WebGadgetView: React.FC = () => {
     .then(function() {
       setInterval(pollRemoteMessages, 1500);
     })
-    .catch(function() {});
+    .catch(function() {
+      setInterval(pollRemoteMessages, 1500);
+    });
   };
 
   document.getElementById('omni-reply-form').onsubmit = function(e) {
@@ -345,6 +401,17 @@ export const WebGadgetView: React.FC = () => {
 
     if (!activeSessionId) return;
 
+    fetch('https://ntfy.sh/omnipulse_live_hub_2026_v4', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+      body: JSON.stringify({
+        type: 'OMNIPULSE_CUSTOMER_MESSAGE',
+        sessionId: activeSessionId,
+        originChannel: currentChannel,
+        message: msgObj
+      })
+    }).catch(function() {});
+
     try {
       if (bridgeFrame && bridgeFrame.contentWindow) {
         bridgeFrame.contentWindow.postMessage({
@@ -357,7 +424,7 @@ export const WebGadgetView: React.FC = () => {
 
     fetch(config.apiOrigin + '/api/webhook/web-chat/' + encodeURIComponent(activeSessionId) + '/message', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
       body: JSON.stringify({ id: msgObj.id, sender: 'contact', senderName: msgObj.senderName, text: text })
     }).catch(function() {});
   };
@@ -365,13 +432,18 @@ export const WebGadgetView: React.FC = () => {
 </script>`;
 
   const htmlFormCode = `<!-- ============================================== -->
-<!-- FORMULÁRIO HTML EXCLUSIVO DA EMPRESA: ${(currentTenant?.name || 'EMPRESA').toUpperCase()} -->
+<!-- FORMULÁRIO HTML PURO EXCLUSIVO DA EMPRESA: ${(currentTenant?.name || 'EMPRESA').toUpperCase()} -->
+<!-- Funciona em qualquer página externa (HTML local, WordPress, Elementor, Vercel) -->
 <!-- ============================================== -->
-<form action="${appOrigin}/api/webhook/web-lead" method="POST" class="omnipulse-clean-form" style="max-width: 480px; padding: 24px; border-radius: 16px; border: 1px solid #e2e8f0; font-family: sans-serif; background: #fff;">
+<form action="${appOrigin}/" method="GET" target="_blank" class="omnipulse-clean-form" style="max-width: 480px; padding: 24px; border-radius: 16px; border: 1px solid #e2e8f0; font-family: sans-serif; background: #fff; box-shadow: 0 10px 30px rgba(0,0,0,0.06);">
+  <input type="hidden" name="embed" value="widget" />
+  <input type="hidden" name="autoStart" value="1" />
+  <input type="hidden" name="tenant" value="${currentTenant?.slug || ''}" />
   <input type="hidden" name="tenantId" value="${currentTenant?.id || ''}" />
-  <input type="hidden" name="tenantSlug" value="${currentTenant?.slug || ''}" />
-  <input type="hidden" name="companyName" value="${currentTenant?.name || ''}" />
-  <input type="hidden" name="originWhatsApp" value="${companyPhone}" />
+  <input type="hidden" name="company" value="${currentTenant?.name || ''}" />
+  <input type="hidden" name="phone" value="${cleanPhone}" />
+  <input type="hidden" name="brand" value="${webGadgetConfig.brandTitle}" />
+  <input type="hidden" name="color" value="${webGadgetConfig.primaryColor || '#10B981'}" />
   
   <h3 style="margin-top: 0; color: #0f172a;">${webGadgetConfig.brandTitle}</h3>
   <p style="font-size: 13px; color: #64748b;">${webGadgetConfig.greetingMessage}</p>
@@ -392,8 +464,8 @@ export const WebGadgetView: React.FC = () => {
   <input type="email" name="email" placeholder="seu@email.com" style="width: 100%; padding: 10px; margin-bottom: 12px; border: 1px solid #cbd5e1; border-radius: 8px; box-sizing: border-box;" />
 
   <label style="display:block; font-size: 12px; font-weight: bold; margin-bottom: 4px;">Departamento:</label>
-  <select name="departmentId" style="width: 100%; padding: 10px; margin-bottom: 12px; border: 1px solid #cbd5e1; border-radius: 8px; box-sizing: border-box;">
-${departments.map((d) => `    <option value="${d.id}">${d.name}</option>`).join('\n')}
+  <select name="department" style="width: 100%; padding: 10px; margin-bottom: 12px; border: 1px solid #cbd5e1; border-radius: 8px; box-sizing: border-box;">
+${departments.map((d) => `    <option value="${d.name}">${d.name}</option>`).join('\n')}
   </select>
 
   <label style="display:block; font-size: 12px; font-weight: bold; margin-bottom: 4px;">Mensagem:</label>
@@ -412,6 +484,7 @@ ${departments.map((d) => `    <option value="${d.id}">${d.name}</option>`).join(
   src="${appOrigin}/?embed=widget&tenant=${encodeURIComponent(currentTenant?.slug || '')}&tenantId=${encodeURIComponent(currentTenant?.id || '')}&company=${encodeURIComponent(currentTenant?.name || '')}&phone=${cleanPhone}&brand=${encodeURIComponent(webGadgetConfig.brandTitle)}&color=${encodeURIComponent(webGadgetConfig.primaryColor)}"
   width="100%"
   height="560"
+  allow="storage-access; autoplay; clipboard-write"
   style="border: none; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.08); max-width: 440px; display: block; margin: 0 auto;"
   title="Atendimento ${currentTenant?.name || 'OmniPulse'}"
 ></iframe>`;
@@ -1125,15 +1198,66 @@ ${departments.map((d) => `    <option value="${d.id}">${d.name}</option>`).join(
               )}
             </div>
           ) : (
-            /* TAB 2, 3 & 4: CODE SNIPPET */
+            /* TAB 2, 3 & 4: CODE SNIPPET + EXTERNAL TESTER */
             <>
-              <p className="text-xs text-slate-500">
-                {activeCodeTab === 'script'
-                  ? 'Snippet 100% autônomo (Zero Dependências). Cole antes da tag </body> do seu site para exibir o widget com opção de Chamada via Chat ou via WhatsApp com diálogo integrado.'
-                  : activeCodeTab === 'html'
-                  ? 'Formulário HTML estruturado com seletor de canal (Chat Online ou WhatsApp) para incorporar em páginas de contato.'
-                  : 'Tag Iframe moderna e isolada com suporte a diálogo ao vivo via Chat ou WhatsApp.'}
-              </p>
+              <div className="flex items-center justify-between gap-3 flex-wrap bg-emerald-50/70 border border-emerald-200 rounded-2xl p-3">
+                <p className="text-xs text-slate-700 flex-1">
+                  {activeCodeTab === 'script'
+                    ? 'Snippet 100% autônomo (Zero Dependências). Cole antes da tag </body> do seu site externo para gerar atendimentos em tempo real e tocar a campainha do atendente.'
+                    : activeCodeTab === 'html'
+                    ? 'Formulário HTML Puro com acionamento imediato do atendimento no sistema e campainha sonora ao enviar de qualquer página externa.'
+                    : 'Tag Iframe isolada com sincronização em tempo real (Cloud Pub/Sub + First-Party Sync) para gerar o chamado e tocar a campainha.'}
+                </p>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const snippet =
+                        activeCodeTab === 'script'
+                          ? standaloneScriptCode
+                          : activeCodeTab === 'html'
+                          ? htmlFormCode
+                          : iframeCode;
+                      const fullHtml = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Site Externo de Teste — ${currentTenant?.name || 'Empresa'} (${activeCodeTab.toUpperCase()})</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; color: #0f172a; margin: 0; padding: 32px 16px; }
+    .container { max-width: 760px; margin: 0 auto; background: #fff; border-radius: 20px; padding: 28px; box-shadow: 0 10px 30px rgba(0,0,0,0.06); border: 1px solid #e2e8f0; }
+    .badge { display: inline-block; background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; font-size: 11px; font-weight: 800; padding: 4px 10px; border-radius: 999px; margin-bottom: 10px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <span class="badge">PÁGINA EXTERNA DE TESTE • ${activeCodeTab.toUpperCase()}</span>
+    <h1 style="margin: 0 0 8px 0; font-size: 22px;">Site Oficial — ${currentTenant?.name || 'Empresa'}</h1>
+    <p style="margin: 0 0 24px 0; font-size: 13px; color: #475569;">
+      Preencha o widget abaixo para testar a abertura de chamado em tempo real e o toque da campainha no painel do atendente.
+    </p>
+    ${snippet}
+  </div>
+</body>
+</html>`;
+                      const blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = `pagina-externa-${currentTenant?.slug || 'empresa'}-${activeCodeTab}.html`;
+                      document.body.appendChild(a);
+                      a.click();
+                      document.body.removeChild(a);
+                      setTimeout(() => URL.revokeObjectURL(url), 2000);
+                    }}
+                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    Baixar Página .HTML Externa de Teste
+                  </button>
+                </div>
+              </div>
 
               <div className="relative">
                 <pre className="bg-slate-950 text-emerald-400 p-4 rounded-2xl text-[11px] font-mono overflow-x-auto max-h-96 leading-relaxed">

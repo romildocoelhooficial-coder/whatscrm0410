@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Radio,
   Server,
@@ -32,10 +32,14 @@ export const GatewayModal: React.FC = () => {
     updatePrimaryPhoneNumber,
     setIsQrModalOpen,
     currentUserRole,
+    currentTenant,
   } = useCRM();
 
   const [activeTab, setActiveTab] = useState<WhatsAppEngine>(gatewayConfig.activeEngine || 'evolution');
-  const [primaryPhone, setPrimaryPhone] = useState(gatewayConfig.primaryPhoneNumber);
+  const [primaryPhone, setPrimaryPhone] = useState(
+    currentTenant?.primaryPhoneNumber || gatewayConfig.primaryPhoneNumber
+  );
+  const [savedNotice, setSavedNotice] = useState<string | null>(null);
 
   // Evolution State
   const [evoUrl, setEvoUrl] = useState(gatewayConfig.evolution.apiUrl);
@@ -61,6 +65,26 @@ export const GatewayModal: React.FC = () => {
   const [simPhone, setSimPhone] = useState('+55 11 99988-7766');
   const [simMsg, setSimMsg] = useState('Olá! Gostaria de cotar o plano corporativo para 12 ramais.');
   const [testStatus, setTestStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    setPrimaryPhone(currentTenant?.primaryPhoneNumber || gatewayConfig.primaryPhoneNumber);
+    setActiveTab(gatewayConfig.activeEngine || 'evolution');
+    setEvoUrl(gatewayConfig.evolution.apiUrl);
+    setEvoToken(gatewayConfig.evolution.apiKey);
+    setEvoInstance(currentTenant?.instanceName || gatewayConfig.evolution.instanceName);
+    setEvoWebhook(gatewayConfig.evolution.webhookUrl);
+  }, [
+    isGatewayModalOpen,
+    currentTenant?.id,
+    currentTenant?.primaryPhoneNumber,
+    currentTenant?.instanceName,
+    gatewayConfig.primaryPhoneNumber,
+    gatewayConfig.activeEngine,
+    gatewayConfig.evolution.apiUrl,
+    gatewayConfig.evolution.apiKey,
+    gatewayConfig.evolution.instanceName,
+    gatewayConfig.evolution.webhookUrl,
+  ]);
 
   if (!isGatewayModalOpen) return null;
 
@@ -97,7 +121,7 @@ export const GatewayModal: React.FC = () => {
   };
 
   const handleSaveConfig = () => {
-    updatePrimaryPhoneNumber(primaryPhone);
+    updatePrimaryPhoneNumber(primaryPhone, currentTenant?.id);
     updateGatewayConfig({
       primaryPhoneNumber: primaryPhone,
       evolution: {
@@ -122,7 +146,8 @@ export const GatewayModal: React.FC = () => {
         apiVersion: metaApiVersion,
       },
     });
-    alert('Configurações salvas e validadas com sucesso!');
+    setSavedNotice(`Configurações e telefone (${primaryPhone}) salvos com sucesso!`);
+    setTimeout(() => setSavedNotice(null), 4000);
   };
 
   const handleTestWebhook = async () => {
@@ -154,7 +179,6 @@ export const GatewayModal: React.FC = () => {
 
   const handleSimulateIncomingWhatsApp = () => {
     simulateWebhookEvent(activeTab, simMsg, simPhone, simName);
-    alert(`Mensagem recebida via motor [${activeTab.toUpperCase()}] de ${simName} inserida na fila de atendimento!`);
     setIsGatewayModalOpen(false);
   };
 
@@ -200,11 +224,18 @@ export const GatewayModal: React.FC = () => {
           </button>
         </div>
 
+        {savedNotice && (
+          <div className="mt-3 p-3 bg-emerald-600 text-white rounded-2xl text-xs font-bold flex items-center gap-2 shadow-sm">
+            <Check className="w-4 h-4 shrink-0" />
+            <span>{savedNotice}</span>
+          </div>
+        )}
+
         {/* Origin Phone Number Banner */}
         <div className="mt-4 p-3.5 bg-emerald-50/70 border border-emerald-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
           <div>
             <span className="text-[10px] text-emerald-800 font-bold uppercase tracking-wider block">
-              Número WhatsApp de Origem Conectado
+              Número WhatsApp de Origem Conectado ({currentTenant?.name || 'Empresa'})
             </span>
             <span className="text-[11px] text-slate-600">
               Número corporativo registrado para envio e recebimento de mensagens:
@@ -220,11 +251,13 @@ export const GatewayModal: React.FC = () => {
               className="py-1.5 px-3 bg-white border border-emerald-300 rounded-xl font-mono text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 w-44"
             />
             <button
+              type="button"
               onClick={() => {
-                updatePrimaryPhoneNumber(primaryPhone);
-                alert(`Número de origem atualizado para: ${primaryPhone}`);
+                updatePrimaryPhoneNumber(primaryPhone, currentTenant?.id);
+                setSavedNotice(`Número de origem atualizado para: ${primaryPhone}`);
+                setTimeout(() => setSavedNotice(null), 4000);
               }}
-              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-semibold text-xs shadow-xs transition-colors shrink-0"
+              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-semibold text-xs shadow-xs transition-colors shrink-0 cursor-pointer"
             >
               Salvar Número
             </button>

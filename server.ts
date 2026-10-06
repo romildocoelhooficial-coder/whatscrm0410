@@ -3,11 +3,35 @@ import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
 
 dotenv.config();
 
 const app = express();
 const port = 3000;
+const TENANTS_STORE_FILE = path.join(process.cwd(), '.crm-tenants-storage.json');
+
+let storedTenantsCache: any[] | null = null;
+try {
+  if (fs.existsSync(TENANTS_STORE_FILE)) {
+    const raw = fs.readFileSync(TENANTS_STORE_FILE, 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      storedTenantsCache = parsed;
+    }
+  }
+} catch {
+  // ignore initial read error
+}
+
+function persistTenantsToDisk(tenantsList: any[]) {
+  storedTenantsCache = tenantsList;
+  try {
+    fs.writeFileSync(TENANTS_STORE_FILE, JSON.stringify(tenantsList, null, 2), 'utf-8');
+  } catch {
+    // ignore write error on read-only fs
+  }
+}
 
 // Enable CORS for External Website Widget Embeds (Script, HTML Form, Iframe)
 app.use((req, res, next) => {
@@ -22,6 +46,19 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(express.text({ type: ['text/plain', 'text/*'], limit: '2mb' }));
+
+// Parse text/plain JSON payloads (used by CORS-simple external widget requests)
+app.use((req, _res, next) => {
+  if (typeof req.body === 'string' && req.body.trim().startsWith('{')) {
+    try {
+      req.body = JSON.parse(req.body);
+    } catch {
+      // keep as string
+    }
+  }
+  next();
+});
 
 // In-Memory Real-Time Store for External Widget Sessions & Live Two-Way Messages
 interface ExternalChatMessage {
@@ -126,6 +163,27 @@ Diretrizes:
   }
 });
 
+// Persistent Company & WhatsApp Phone Storage API
+app.get('/api/storage/tenants', (_req: Request, res: Response) => {
+  return res.status(200).json({
+    success: true,
+    tenants: storedTenantsCache,
+  });
+});
+
+app.post('/api/storage/tenants', (req: Request, res: Response) => {
+  const body = req.body || {};
+  const list = Array.isArray(body) ? body : body.tenants;
+  if (Array.isArray(list) && list.length > 0) {
+    persistTenantsToDisk(list);
+    return res.status(200).json({
+      success: true,
+      tenants: storedTenantsCache,
+    });
+  }
+  return res.status(400).json({ error: 'Invalid tenants payload' });
+});
+
 // Evolution API, Uazapi & Meta Cloud API Webhook test
 app.post('/api/webhook/test', (req: Request, res: Response) => {
   const { engine, event, payload } = req.body;
@@ -160,6 +218,85 @@ app.post('/api/webhook/meta', (req: Request, res: Response) => {
   const body = req.body;
   console.log('[Meta Cloud API Webhook Event Received]:', JSON.stringify(body).slice(0, 150));
   return res.status(200).send('EVENT_RECEIVED');
+});
+
+// 1x1 Image Beacon GET endpoint for CORS-free external widget lead creation
+app.get('/api/webhook/web-lead-beacon', (req: Request, res: Response) => {
+  try {
+    const rawData = req.query.d as string;
+    if (rawData) {
+      const body = JSON.parse(rawData);
+      const sessionId =
+        body.sessionId || `ext-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      if (!externalSessions.has(sessionId)) {
+        const originChannel: 'chat' | 'whatsapp' =
+          body.originChannel === 'whatsapp' ? 'whatsapp' : 'chat';
+        const protocol =
+          body.protocol ||
+          (originChannel === 'chat'
+            ? `OP-CHAT-${Date.now().toString().slice(-4)}`
+            : `OP-WA-${Date.now().toString().slice(-4)}`);
+        const name = (body.name || 'Cliente Web').trim();
+        const phone = (body.phone || body.whatsapp || '+55 11 99999-0000').trim();
+        const email = (body.email || '').trim();
+        const department = (body.department || body.departmentId || 'Comercial & Vendas').trim();
+        const message = (body.message || 'Olá! Gostaria de iniciar um atendimento.').trim();
+        const tenantId = (body.tenantId || '').trim();
+        const tenantSlug = (body.tenantSlug || '').trim();
+        const companyName = (body.companyName || '').trim();
+        const timeStr = getNowTimeStr();
+        const nowMs = Date.now();
+        const welcomeText =
+          originChannel === 'whatsapp'
+            ? `Olá ${name}! 📱 Sua solicitação via WhatsApp para ${companyName || 'nossa equipe'} foi recebida no setor ${department}. Um atendente já foi acionado e responderá aqui mesmo!`
+            : `Olá ${name}! 💬 Seu chamado via Chat Online para ${companyName || 'nossa equipe'} foi aberto no setor ${department}. Um atendente já foi notificado e responderá por aqui!`;
+
+        externalSessions.set(sessionId, {
+          sessionId,
+          protocol,
+          tenantId,
+          tenantSlug,
+          companyName,
+          name,
+          phone,
+          email,
+          department,
+          originChannel,
+          createdAt: nowMs,
+          updatedAt: nowMs,
+          messages: [
+            {
+              id: `m-ext-init-${nowMs}`,
+              sender: 'contact',
+              senderName: name,
+              text: message,
+              timestamp: timeStr,
+              createdAt: nowMs,
+            },
+            {
+              id: `m-ext-welcome-${nowMs + 1}`,
+              sender: 'agent',
+              senderName: companyName ? `Recepção ${companyName}` : 'Atendimento Online',
+              text: welcomeText,
+              timestamp: timeStr,
+              createdAt: nowMs + 1,
+            },
+          ],
+        });
+      }
+    }
+  } catch {
+    // ignore beacon parse errors
+  }
+
+  // Return 1x1 transparent GIF
+  const gif = Buffer.from(
+    'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
+    'base64'
+  );
+  res.setHeader('Content-Type', 'image/gif');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  return res.status(200).send(gif);
 });
 
 // Web Lead endpoint for External Gadget embed submissions (Script, HTML Form, Iframe)

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ShieldCheck,
   Plus,
@@ -29,6 +29,7 @@ import {
   EyeOff,
   Award,
   Check,
+  Phone,
 } from 'lucide-react';
 import { useCRM } from '../../context/CRMContext';
 import { Agent, Department } from '../../types/crm';
@@ -56,6 +57,7 @@ export const AdminMasterView: React.FC = () => {
     openQrCodeForActivation,
     setActiveView,
     currentTenant,
+    updateTenant,
     updateCurrentTenantCredentials,
   } = useCRM();
 
@@ -66,21 +68,73 @@ export const AdminMasterView: React.FC = () => {
   const itemsPerPage = 4;
 
   // Origin Phone Number Editing
+  const activeCompanyPhone =
+    currentTenant?.primaryPhoneNumber || gatewayConfig.primaryPhoneNumber;
   const [isEditingPhone, setIsEditingPhone] = useState(false);
-  const [phoneInputValue, setPhoneInputValue] = useState(gatewayConfig.primaryPhoneNumber);
+  const [phoneInputValue, setPhoneInputValue] = useState(activeCompanyPhone);
+  const [phoneSavedBadge, setPhoneSavedBadge] = useState(false);
 
-  // Admin Master Credentials Security Editing
+  // Admin Master Credentials & Company Phone Editing
   const [isEditingCredentials, setIsEditingCredentials] = useState(false);
-  const [adminEmailInput, setAdminEmailInput] = useState(currentTenant?.masterAdminEmail || 'isabella.admin@omnipulse.io');
-  const [adminPasswordInput, setAdminPasswordInput] = useState(currentTenant?.masterAdminPassword || 'admin123');
+  const [companyNameInput, setCompanyNameInput] = useState(
+    currentTenant?.name || 'OmniPulse Matriz'
+  );
+  const [companyPhoneInput, setCompanyPhoneInput] = useState(activeCompanyPhone);
+  const [adminNameInput, setAdminNameInput] = useState(
+    currentTenant?.masterAdminName || 'Isabella Rodrigues'
+  );
+  const [adminEmailInput, setAdminEmailInput] = useState(
+    currentTenant?.masterAdminEmail || 'isabella.admin@omnipulse.io'
+  );
+  const [adminPasswordInput, setAdminPasswordInput] = useState(
+    currentTenant?.masterAdminPassword || 'admin123'
+  );
   const [showAdminPass, setShowAdminPass] = useState(false);
   const [credsSuccessMsg, setCredsSuccessMsg] = useState<string | null>(null);
 
+  useEffect(() => {
+    const nextPhone =
+      currentTenant?.primaryPhoneNumber || gatewayConfig.primaryPhoneNumber;
+    setPhoneInputValue(nextPhone);
+    setCompanyPhoneInput(nextPhone);
+    setCompanyNameInput(currentTenant?.name || 'OmniPulse Matriz');
+    setAdminNameInput(currentTenant?.masterAdminName || 'Isabella Rodrigues');
+    setAdminEmailInput(
+      currentTenant?.masterAdminEmail || 'isabella.admin@omnipulse.io'
+    );
+    setAdminPasswordInput(currentTenant?.masterAdminPassword || 'admin123');
+  }, [
+    currentTenant?.id,
+    currentTenant?.primaryPhoneNumber,
+    currentTenant?.name,
+    currentTenant?.masterAdminName,
+    currentTenant?.masterAdminEmail,
+    currentTenant?.masterAdminPassword,
+    gatewayConfig.primaryPhoneNumber,
+  ]);
+
   const handleSaveCredentials = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!adminEmailInput.trim() || !adminPasswordInput.trim()) return;
-    updateCurrentTenantCredentials(adminEmailInput.trim(), adminPasswordInput.trim());
-    setCredsSuccessMsg('Credenciais do Admin Master atualizadas com sucesso! Utilize este e-mail e senha no próximo login.');
+    if (!adminEmailInput.trim() || !adminPasswordInput.trim() || !companyPhoneInput.trim()) return;
+    if (currentTenant?.id) {
+      updateTenant(currentTenant.id, {
+        name: companyNameInput.trim() || currentTenant.name,
+        primaryPhoneNumber: companyPhoneInput.trim(),
+        masterAdminName: adminNameInput.trim() || currentTenant.masterAdminName,
+        masterAdminEmail: adminEmailInput.trim(),
+        masterAdminPassword: adminPasswordInput.trim(),
+      });
+    } else {
+      updatePrimaryPhoneNumber(companyPhoneInput.trim());
+      updateCurrentTenantCredentials(
+        adminEmailInput.trim(),
+        adminPasswordInput.trim(),
+        adminNameInput.trim()
+      );
+    }
+    setCredsSuccessMsg(
+      `Telefone WhatsApp (${companyPhoneInput.trim()}), dados da empresa e credenciais do Admin Master salvos com sucesso!`
+    );
     setIsEditingCredentials(false);
     setTimeout(() => setCredsSuccessMsg(null), 6000);
   };
@@ -88,8 +142,10 @@ export const AdminMasterView: React.FC = () => {
   const handleSavePhone = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!phoneInputValue.trim()) return;
-    updatePrimaryPhoneNumber(phoneInputValue);
+    updatePrimaryPhoneNumber(phoneInputValue.trim(), currentTenant?.id);
     setIsEditingPhone(false);
+    setPhoneSavedBadge(true);
+    setTimeout(() => setPhoneSavedBadge(false), 3500);
   };
 
   const isEvolutionActive = gatewayConfig.activeEngine === 'evolution';
@@ -192,43 +248,48 @@ export const AdminMasterView: React.FC = () => {
           <div className="mt-1 flex items-center gap-3 text-xs text-slate-500 flex-wrap">
             <div className="flex items-center gap-1.5 text-slate-700 font-medium">
               <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
-              <span>Instância Primária:</span>
+              <span>Telefone Principal / WhatsApp:</span>
               {isEditingPhone ? (
                 <form onSubmit={handleSavePhone} className="flex items-center gap-1">
                   <input
                     type="text"
                     value={phoneInputValue}
                     onChange={(e) => setPhoneInputValue(e.target.value)}
-                    className="py-0.5 px-2 bg-white border border-emerald-500 rounded text-slate-900 font-mono text-xs focus:outline-none"
+                    className="py-1 px-2.5 bg-white border-2 border-emerald-500 rounded-lg text-slate-900 font-mono font-bold text-xs focus:outline-none"
                     autoFocus
                   />
                   <button
                     type="submit"
-                    className="px-2 py-0.5 bg-emerald-600 text-white rounded text-[10px] font-bold"
+                    className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-bold cursor-pointer"
                   >
                     Salvar
                   </button>
                   <button
                     type="button"
                     onClick={() => setIsEditingPhone(false)}
-                    className="px-1.5 py-0.5 bg-slate-200 text-slate-700 rounded text-[10px]"
+                    className="px-2 py-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-[10px] font-semibold cursor-pointer"
                   >
                     Cancelar
                   </button>
                 </form>
               ) : (
                 <div className="flex items-center gap-1.5">
-                  <strong className="font-mono text-slate-900">{gatewayConfig.primaryPhoneNumber}</strong>
+                  <strong className="font-mono text-slate-900">{activeCompanyPhone}</strong>
+                  {phoneSavedBadge && (
+                    <span className="text-[10px] bg-emerald-600 text-white px-2 py-0.5 rounded-full font-bold flex items-center gap-0.5">
+                      <Check className="w-2.5 h-2.5" /> Salvo!
+                    </span>
+                  )}
                   <button
                     onClick={() => {
-                      setPhoneInputValue(gatewayConfig.primaryPhoneNumber);
+                      setPhoneInputValue(activeCompanyPhone);
                       setIsEditingPhone(true);
                     }}
-                    className="text-[10px] bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900 px-1.5 py-0.5 rounded font-medium flex items-center gap-1 transition-colors"
-                    title="Editar número WhatsApp de origem"
+                    className="text-[10px] bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded-lg font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                    title="Editar número de telefone principal / WhatsApp da empresa"
                   >
-                    <Pencil className="w-2.5 h-2.5" />
-                    Editar Número
+                    <Pencil className="w-2.5 h-2.5 text-emerald-600" />
+                    Editar Telefone
                   </button>
                 </div>
               )}
@@ -612,24 +673,24 @@ export const AdminMasterView: React.FC = () => {
         </div>
       </div>
 
-      {/* Credenciais de Acesso & Segurança do Administrador Master */}
+      {/* Dados da Empresa, Telefone Principal / WhatsApp & Credenciais do Administrador Master */}
       <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-2xs space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-2xl bg-slate-900 text-emerald-400 flex items-center justify-center font-bold shadow-md shrink-0">
-              <Key className="w-5 h-5" />
+              <Phone className="w-5 h-5" />
             </div>
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="text-sm font-extrabold text-slate-900">
-                  Segurança & Credenciais de Acesso do Administrador Master
+                  Dados da Empresa, Telefone WhatsApp & Credenciais Master
                 </h3>
                 <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold">
                   {currentTenant?.name || 'OmniPulse Matriz'}
                 </span>
               </div>
               <p className="text-xs text-slate-500 mt-0.5">
-                Altere o e-mail de login e a senha deste Admin Master para acessar este painel e administrar a linha de WhatsApp.
+                Gerencie o telefone principal de WhatsApp da empresa, nome corporativo e credenciais de login do Admin Master.
               </p>
             </div>
           </div>
@@ -638,13 +699,16 @@ export const AdminMasterView: React.FC = () => {
             type="button"
             onClick={() => {
               setIsEditingCredentials(!isEditingCredentials);
+              setCompanyNameInput(currentTenant?.name || 'OmniPulse Matriz');
+              setCompanyPhoneInput(activeCompanyPhone);
+              setAdminNameInput(currentTenant?.masterAdminName || 'Isabella Rodrigues');
               setAdminEmailInput(currentTenant?.masterAdminEmail || 'isabella.admin@omnipulse.io');
               setAdminPasswordInput(currentTenant?.masterAdminPassword || 'admin123');
             }}
-            className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold rounded-xl text-xs transition-colors flex items-center gap-1.5 self-start sm:self-auto shrink-0"
+            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition-colors flex items-center gap-1.5 self-start sm:self-auto shrink-0 shadow-xs cursor-pointer"
           >
-            <Pencil className="w-3.5 h-3.5 text-slate-600" />
-            <span>{isEditingCredentials ? 'Cancelar Edição' : 'Alterar E-mail e Senha'}</span>
+            <Pencil className="w-3.5 h-3.5" />
+            <span>{isEditingCredentials ? 'Cancelar Edição' : 'Editar Telefone WhatsApp & Dados'}</span>
           </button>
         </div>
 
@@ -656,7 +720,29 @@ export const AdminMasterView: React.FC = () => {
         )}
 
         {!isEditingCredentials ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-xs">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+            <div className="p-3.5 bg-emerald-50/70 rounded-2xl border border-emerald-200">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] uppercase font-extrabold text-emerald-800">
+                  Telefone Principal / WhatsApp
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCompanyPhoneInput(activeCompanyPhone);
+                    setIsEditingCredentials(true);
+                  }}
+                  className="text-[10px] font-bold text-emerald-700 hover:text-emerald-950 flex items-center gap-0.5 cursor-pointer"
+                >
+                  <Pencil className="w-2.5 h-2.5" /> Editar
+                </button>
+              </div>
+              <div className="flex items-center gap-2 font-mono font-extrabold text-slate-900 text-sm">
+                <Phone className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span className="truncate">{activeCompanyPhone}</span>
+              </div>
+            </div>
+
             <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200">
               <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">E-mail de Login Atual</span>
               <div className="flex items-center gap-2 font-mono font-bold text-slate-900">
@@ -691,7 +777,50 @@ export const AdminMasterView: React.FC = () => {
           </div>
         ) : (
           <form onSubmit={handleSaveCredentials} className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div className="sm:col-span-2 lg:col-span-1">
+                <label className="block text-emerald-900 font-extrabold text-xs mb-1">
+                  Telefone Principal / WhatsApp da Empresa *
+                </label>
+                <div className="relative">
+                  <Phone className="w-4 h-4 text-emerald-600 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    required
+                    value={companyPhoneInput}
+                    onChange={(e) => setCompanyPhoneInput(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 bg-white border-2 border-emerald-500 rounded-xl text-xs font-mono font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    placeholder="+55 11 98765-4321"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-700 font-bold text-xs mb-1">
+                  Nome da Empresa *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={companyNameInput}
+                  onChange={(e) => setCompanyNameInput(e.target.value)}
+                  className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-700 font-bold text-xs mb-1">
+                  Nome do Gestor Master *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={adminNameInput}
+                  onChange={(e) => setAdminNameInput(e.target.value)}
+                  className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
               <div>
                 <label className="block text-slate-700 font-bold text-xs mb-1">
                   Novo E-mail de Login do Admin Master *
@@ -736,22 +865,22 @@ export const AdminMasterView: React.FC = () => {
 
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-slate-200">
               <span className="text-[11px] text-slate-500">
-                A nova credencial será exigida imediatamente na página de login do sistema.
+                O telefone principal de WhatsApp e as credenciais são sincronizados em todo o sistema imediatamente.
               </span>
               <div className="flex items-center gap-2 self-end sm:self-auto">
                 <button
                   type="button"
                   onClick={() => setIsEditingCredentials(false)}
-                  className="px-3 py-1.5 border border-slate-300 hover:bg-slate-100 rounded-xl text-slate-700 text-xs font-semibold"
+                  className="px-3 py-1.5 border border-slate-300 hover:bg-slate-100 rounded-xl text-slate-700 text-xs font-semibold cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-sm transition-colors flex items-center gap-1.5"
+                  className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-sm transition-colors flex items-center gap-1.5 cursor-pointer"
                 >
                   <Check className="w-3.5 h-3.5" />
-                  <span>Salvar Novas Credenciais</span>
+                  <span>Salvar Telefone & Credenciais</span>
                 </button>
               </div>
             </div>
