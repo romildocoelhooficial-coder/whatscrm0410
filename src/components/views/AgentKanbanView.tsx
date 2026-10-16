@@ -12,6 +12,9 @@ import {
   Shield,
   Bot,
   Zap,
+  GripVertical,
+  Move,
+  Sparkles,
 } from 'lucide-react';
 import { useCRM } from '../../context/CRMContext';
 import { ChatPhase, ChatTicket } from '../../types/crm';
@@ -30,6 +33,7 @@ export const AgentKanbanView: React.FC = () => {
     visibleTickets,
     canViewAllDepartmentsAndTickets,
     updateTicketPhase,
+    repositionTicket,
     assignTicketToAgent,
     setSelectedTicket,
     setActiveView,
@@ -45,6 +49,12 @@ export const AgentKanbanView: React.FC = () => {
   const [filterDepartment, setFilterDepartment] = useState<string>('all');
   const [filterAgentId, setFilterAgentId] = useState<string>('all');
   const [filterScope, setFilterScope] = useState<'my_tickets' | 'all_dept'>('all_dept');
+
+  // Drag and Drop States
+  const [draggedTicketId, setDraggedTicketId] = useState<string | null>(null);
+  const [dragOverPhase, setDragOverPhase] = useState<ChatPhase | null>(null);
+  const [dragOverTargetTicketId, setDragOverTargetTicketId] = useState<string | null>(null);
+  const [dropInsertPosition, setDropInsertPosition] = useState<'before' | 'after'>('after');
 
   // Strict RBAC Filtering:
   // - Atendente N1 (and non-Senior/non-Admin): ONLY sees their own assigned atendimentos (t.assignedAgentId === currentAgent.id)
@@ -210,6 +220,11 @@ export const AgentKanbanView: React.FC = () => {
             </div>
           )}
 
+          <div className="flex items-center gap-1.5 px-3 py-1 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-semibold shadow-2xs">
+            <Move className="w-3.5 h-3.5 text-emerald-600 animate-pulse" />
+            <span>🖐️ Segure com o mouse e arraste para reposicionar</span>
+          </div>
+
           {slaAlertCount > 0 && (
             <span className="flex items-center gap-1 text-[11px] bg-rose-50 text-rose-700 border border-rose-200 px-2.5 py-1 rounded-lg font-semibold">
               <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
@@ -250,16 +265,46 @@ export const AgentKanbanView: React.FC = () => {
         )}
       </div>
 
-      {/* Kanban Board of Attendant Phases */}
+      {/* Kanban Board of Attendant Phases with Drag & Drop */}
       <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 overflow-x-auto pb-4">
         {phases.map((phase) => {
           const phaseTickets = agentTickets.filter((t) => t.phase === phase.id);
+          const isColumnHovered = dragOverPhase === phase.id && draggedTicketId !== null;
 
           return (
             <div
               key={phase.id}
-              className={`rounded-2xl border p-3 flex flex-col justify-between min-h-[560px] shadow-2xs ${phase.bg} ${
-                phase.id === 'transbordo' ? 'border-amber-300' : 'border-slate-200'
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                if (dragOverPhase !== phase.id) {
+                  setDragOverPhase(phase.id);
+                }
+              }}
+              onDragEnter={(e) => {
+                e.preventDefault();
+                setDragOverPhase(phase.id);
+              }}
+              onDragLeave={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                  if (dragOverPhase === phase.id) setDragOverPhase(null);
+                }
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (draggedTicketId) {
+                  repositionTicket(draggedTicketId, phase.id, null);
+                  setDraggedTicketId(null);
+                  setDragOverPhase(null);
+                  setDragOverTargetTicketId(null);
+                }
+              }}
+              className={`rounded-2xl border p-3 flex flex-col justify-between min-h-[560px] shadow-2xs transition-all duration-200 ${phase.bg} ${
+                isColumnHovered
+                  ? 'ring-2 ring-emerald-500 ring-offset-2 border-emerald-400 bg-emerald-50/70 shadow-md scale-[1.01]'
+                  : phase.id === 'transbordo'
+                  ? 'border-amber-300'
+                  : 'border-slate-200'
               }`}
             >
               <div>
@@ -274,158 +319,245 @@ export const AgentKanbanView: React.FC = () => {
                   </span>
                 </div>
 
+                {/* Dropzone Hint when dragging over this column */}
+                {isColumnHovered && (
+                  <div className="mt-2 mb-2 p-2.5 border-2 border-dashed border-emerald-500 bg-emerald-100/60 rounded-xl text-center text-[11px] font-bold text-emerald-800 animate-pulse flex items-center justify-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Solte para mover para {phase.label.split('.')[1] || phase.label}</span>
+                  </div>
+                )}
+
                 {/* Cards Container */}
                 <div className="mt-3 space-y-3">
                   {phaseTickets.map((ticket) => {
                     const dept = departments.find((d) => d.id === ticket.departmentId);
+                    const isBeingDragged = draggedTicketId === ticket.id;
+                    const isTargetOfHover =
+                      dragOverTargetTicketId === ticket.id && draggedTicketId !== ticket.id;
 
                     return (
-                      <div
-                        key={ticket.id}
-                        className="bg-white rounded-xl border border-slate-200 p-3.5 shadow-2xs hover:shadow-md transition-all text-xs"
-                      >
-                        {/* Protocol & Engine */}
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="font-mono text-[10px] font-bold text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200">
-                            {ticket.protocol}
-                          </span>
-                          {ticket.originChannel === 'chat' || ticket.originEngine === 'web_chat' ? (
-                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200">
-                              💬 Origem: Chat
-                            </span>
-                          ) : (
-                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
-                              📱 Origem: WhatsApp
-                            </span>
-                          )}
-                        </div>
+                      <div key={ticket.id} className="relative">
+                        {/* Insertion line indicator above */}
+                        {isTargetOfHover && dropInsertPosition === 'before' && (
+                          <div className="h-1.5 bg-emerald-500 rounded-full mb-2 shadow-xs animate-pulse ring-2 ring-emerald-300" />
+                        )}
 
-                        {/* Contact details */}
-                        <div className="flex items-center gap-2.5">
-                          <img
-                            src={ticket.contactAvatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=120&q=80'}
-                            alt={ticket.contactName}
-                            className="w-8 h-8 rounded-full object-cover"
-                          />
-                          <div className="min-w-0">
-                            <div className="font-bold text-slate-900 truncate">
-                              {ticket.contactName}
+                        <div
+                          draggable={true}
+                          onDragStart={(e) => {
+                            e.dataTransfer.setData('text/plain', ticket.id);
+                            e.dataTransfer.effectAllowed = 'move';
+                            setDraggedTicketId(ticket.id);
+                          }}
+                          onDragEnd={() => {
+                            setDraggedTicketId(null);
+                            setDragOverPhase(null);
+                            setDragOverTargetTicketId(null);
+                          }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            const isBefore = e.clientY - rect.top < rect.height / 2;
+                            setDragOverPhase(phase.id);
+                            setDragOverTargetTicketId(ticket.id);
+                            setDropInsertPosition(isBefore ? 'before' : 'after');
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (draggedTicketId) {
+                              repositionTicket(
+                                draggedTicketId,
+                                phase.id,
+                                ticket.id,
+                                dropInsertPosition
+                              );
+                              setDraggedTicketId(null);
+                              setDragOverPhase(null);
+                              setDragOverTargetTicketId(null);
+                            }
+                          }}
+                          className={`bg-white rounded-xl border p-3.5 shadow-2xs hover:shadow-md transition-all text-xs cursor-grab active:cursor-grabbing select-none group relative ${
+                            isBeingDragged
+                              ? 'opacity-30 border-dashed border-emerald-500 bg-emerald-50/40 scale-[0.98]'
+                              : isTargetOfHover
+                              ? 'border-emerald-400 shadow-sm ring-1 ring-emerald-300'
+                              : 'border-slate-200 hover:border-emerald-300'
+                          }`}
+                        >
+                          {/* Protocol & Engine & Drag Handle */}
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-1">
+                              <span
+                                className="cursor-grab active:cursor-grabbing p-0.5 -ml-1 text-slate-300 hover:text-slate-600 rounded shrink-0 transition-colors"
+                                title="Segure com o mouse e arraste para reposicionar no Kanban"
+                              >
+                                <GripVertical className="w-3.5 h-3.5" />
+                              </span>
+                              <span className="font-mono text-[10px] font-bold text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200">
+                                {ticket.protocol}
+                              </span>
                             </div>
-                            <div className="text-[10px] text-slate-500 font-mono">
-                              {ticket.contactPhone}
+                            {ticket.originChannel === 'chat' || ticket.originEngine === 'web_chat' ? (
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200">
+                                💬 Origem: Chat
+                              </span>
+                            ) : (
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                📱 Origem: WhatsApp
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Contact details */}
+                          <div className="flex items-center gap-2.5">
+                            <img
+                              src={
+                                ticket.contactAvatar ||
+                                'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=120&q=80'
+                              }
+                              alt={ticket.contactName}
+                              className="w-8 h-8 rounded-full object-cover"
+                            />
+                            <div className="min-w-0">
+                              <div className="font-bold text-slate-900 truncate">
+                                {ticket.contactName}
+                              </div>
+                              <div className="text-[10px] text-slate-500 font-mono">
+                                {ticket.contactPhone}
+                              </div>
                             </div>
                           </div>
-                        </div>
 
-                        {/* Dept Badge */}
-                        <div className="mt-2 flex items-center justify-between gap-1">
-                          <span className="text-[10px] bg-slate-100 text-slate-700 px-2 py-0.5 rounded font-medium truncate">
-                            {dept?.name || 'Comercial'}
-                          </span>
-
-                          {ticket.slaExceeded && (
-                            <span className="text-[10px] text-rose-600 font-semibold flex items-center gap-1 shrink-0">
-                              <AlertTriangle className="w-3 h-3" />
-                              Transbordo
+                          {/* Dept Badge */}
+                          <div className="mt-2 flex items-center justify-between gap-1">
+                            <span className="text-[10px] bg-slate-100 text-slate-700 px-2 py-0.5 rounded font-medium truncate">
+                              {dept?.name || 'Comercial'}
                             </span>
-                          )}
-                        </div>
 
-                        {/* Assigned Attendant (Selectable by Operador Sênior & Admin, Read-only for N1) */}
-                        <div className="mt-2">
-                          {canViewAllDepartmentsAndTickets ? (
-                            <select
-                              value={ticket.assignedAgentId || ''}
-                              onChange={(e) =>
-                                assignTicketToAgent(
-                                  ticket.id,
-                                  e.target.value ? e.target.value : null
-                                )
-                              }
-                              className="w-full text-[10px] font-semibold py-1 px-1.5 rounded bg-emerald-50/70 border border-emerald-200 text-emerald-950 focus:outline-none"
-                              title="Atribuir atendimento para um atendente"
+                            {ticket.slaExceeded && (
+                              <span className="text-[10px] text-rose-600 font-semibold flex items-center gap-1 shrink-0">
+                                <AlertTriangle className="w-3 h-3" />
+                                Transbordo
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Assigned Attendant */}
+                          <div className="mt-2">
+                            {canViewAllDepartmentsAndTickets ? (
+                              <select
+                                value={ticket.assignedAgentId || ''}
+                                onChange={(e) => {
+                                  e.stopPropagation();
+                                  assignTicketToAgent(
+                                    ticket.id,
+                                    e.target.value ? e.target.value : null
+                                  );
+                                }}
+                                className="w-full text-[10px] font-semibold py-1 px-1.5 rounded bg-emerald-50/70 border border-emerald-200 text-emerald-950 focus:outline-none"
+                                title="Atribuir atendimento para um atendente"
+                              >
+                                <option value="">⏳ Fila Geral (Sem Atendente)</option>
+                                {agents.map((ag) => (
+                                  <option key={ag.id} value={ag.id}>
+                                    🎧 {ag.name} ({ag.role})
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <div className="text-[10px] font-semibold py-1 px-2 rounded bg-blue-50 border border-blue-200 text-blue-900 truncate">
+                                🎧 Atendente: {currentAgent.name} ({currentAgent.role})
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Last message preview */}
+                          <div className="mt-2.5 p-2 bg-slate-50 rounded-lg border border-slate-100 text-[11px] text-slate-700 line-clamp-2">
+                            {ticket.lastMessage}
+                          </div>
+
+                          {ticket.aiHandled && (
+                            <div className="mt-2 flex items-center gap-1 text-[10px] text-purple-700 font-medium">
+                              <Bot className="w-3 h-3" />
+                              <span>Atendido por IA Fallback</span>
+                            </div>
+                          )}
+
+                          {/* Action buttons */}
+                          <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between gap-1">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedTicket(ticket);
+                                setActiveView('inbox');
+                              }}
+                              className="flex-1 py-1 px-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-semibold transition-colors flex items-center justify-center gap-1"
                             >
-                              <option value="">⏳ Fila Geral (Sem Atendente)</option>
-                              {agents.map((ag) => (
-                                <option key={ag.id} value={ag.id}>
-                                  🎧 {ag.name} ({ag.role})
+                              <MessageSquare className="w-3 h-3" />
+                              Atender
+                            </button>
+
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setScheduleTargetLead({
+                                  name: ticket.contactName,
+                                  phone: ticket.contactPhone,
+                                });
+                                setIsScheduleModalOpen(true);
+                              }}
+                              className="p-1 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded"
+                              title="Agendar Demo no Google Calendar"
+                            >
+                              <Calendar className="w-3.5 h-3.5" />
+                            </button>
+
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                triggerAiFallbackForTicket(ticket.id);
+                              }}
+                              className="p-1 text-slate-400 hover:text-purple-600 hover:bg-purple-50 rounded"
+                              title="Disparar IA para Responder Automaticamente"
+                            >
+                              <Zap className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+
+                          {/* Move Phase Selector (Fallback / Quick Selection) */}
+                          <div className="mt-2 pt-2 border-t border-slate-50">
+                            <select
+                              value={ticket.phase}
+                              onChange={(e) => {
+                                e.stopPropagation();
+                                updateTicketPhase(ticket.id, e.target.value as ChatPhase);
+                              }}
+                              className="w-full text-[10px] font-semibold py-1 px-1.5 rounded bg-slate-50 border border-slate-200 text-slate-700 focus:outline-none"
+                            >
+                              {phases.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  Mover: {p.label}
                                 </option>
                               ))}
                             </select>
-                          ) : (
-                            <div className="text-[10px] font-semibold py-1 px-2 rounded bg-blue-50 border border-blue-200 text-blue-900 truncate">
-                              🎧 Atendente: {currentAgent.name} ({currentAgent.role})
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Last message preview */}
-                        <div className="mt-2.5 p-2 bg-slate-50 rounded-lg border border-slate-100 text-[11px] text-slate-700 line-clamp-2">
-                          {ticket.lastMessage}
-                        </div>
-
-                        {ticket.aiHandled && (
-                          <div className="mt-2 flex items-center gap-1 text-[10px] text-purple-700 font-medium">
-                            <Bot className="w-3 h-3" />
-                            <span>Atendido por IA Fallback</span>
                           </div>
+                        </div>
+
+                        {/* Insertion line indicator below */}
+                        {isTargetOfHover && dropInsertPosition === 'after' && (
+                          <div className="h-1.5 bg-emerald-500 rounded-full mt-2 shadow-xs animate-pulse ring-2 ring-emerald-300" />
                         )}
-
-                        {/* Action buttons */}
-                        <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between gap-1">
-                          <button
-                            onClick={() => {
-                              setSelectedTicket(ticket);
-                              setActiveView('inbox');
-                            }}
-                            className="flex-1 py-1 px-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-semibold transition-colors flex items-center justify-center gap-1"
-                          >
-                            <MessageSquare className="w-3 h-3" />
-                            Atender
-                          </button>
-
-                          <button
-                            onClick={() => {
-                              setScheduleTargetLead({
-                                name: ticket.contactName,
-                                phone: ticket.contactPhone,
-                              });
-                              setIsScheduleModalOpen(true);
-                            }}
-                            className="p-1 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded"
-                            title="Agendar Demo no Google Calendar"
-                          >
-                            <Calendar className="w-3.5 h-3.5" />
-                          </button>
-
-                          <button
-                            onClick={() => triggerAiFallbackForTicket(ticket.id)}
-                            className="p-1 text-slate-400 hover:text-purple-600 hover:bg-purple-50 rounded"
-                            title="Disparar IA para Responder Automaticamente"
-                          >
-                            <Zap className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-
-                        {/* Move Phase Selector */}
-                        <div className="mt-2 pt-2 border-t border-slate-50">
-                          <select
-                            value={ticket.phase}
-                            onChange={(e) =>
-                              updateTicketPhase(ticket.id, e.target.value as ChatPhase)
-                            }
-                            className="w-full text-[10px] font-semibold py-1 px-1.5 rounded bg-slate-50 border border-slate-200 text-slate-700 focus:outline-none"
-                          >
-                            {phases.map((p) => (
-                              <option key={p.id} value={p.id}>
-                                Mover: {p.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
                       </div>
                     );
                   })}
+
+                  {phaseTickets.length === 0 && (
+                    <div className="p-6 border-2 border-dashed border-slate-200/80 rounded-xl text-center text-slate-400 text-[11px]">
+                      Nenhum atendimento nesta fase. Arraste um card aqui para mover.
+                    </div>
+                  )}
                 </div>
               </div>
 

@@ -153,12 +153,24 @@ interface CRMContextType {
   // Deals & Funnel
   addDeal: (deal: Omit<Deal, 'id' | 'createdAt' | 'updatedAt'>) => void;
   updateDealStage: (dealId: string, newStage: DealStage) => void;
+  repositionDeal: (
+    dealId: string,
+    targetStage: DealStage,
+    targetDealId?: string | null,
+    position?: 'before' | 'after'
+  ) => void;
   updateDeal: (dealId: string, updates: Partial<Deal>) => void;
   deleteDeal: (dealId: string) => void;
 
   // Tickets & Chat
   sendChatMessage: (ticketId: string, text: string, sender?: 'agent' | 'contact' | 'ai_bot') => Promise<void>;
   updateTicketPhase: (ticketId: string, newPhase: ChatPhase) => void;
+  repositionTicket: (
+    ticketId: string,
+    targetPhase: ChatPhase,
+    targetTicketId?: string | null,
+    position?: 'before' | 'after'
+  ) => void;
   transferTicket: (ticketId: string, targetDeptId: string, targetAgentId?: string | null) => void;
   assignTicketToAgent: (ticketId: string, agentId: string | null) => void;
   triggerAiFallbackForTicket: (ticketId: string) => Promise<void>;
@@ -2186,6 +2198,63 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
+  const repositionDeal = (
+    dealId: string,
+    targetStage: DealStage,
+    targetDealId?: string | null,
+    position: 'before' | 'after' = 'after'
+  ) => {
+    const today = new Date().toISOString().split('T')[0];
+    const deal = deals.find((d) => d.id === dealId);
+    if (!deal) return;
+
+    if (targetStage === 'fechado_ganho' && deal.stage !== 'fechado_ganho') {
+      triggerConfetti();
+      playAttendanceChime('chat', 'message');
+      if (deal.assignedAgentId) {
+        setAgents((prev) =>
+          prev.map((a) =>
+            a.id === deal.assignedAgentId
+              ? {
+                  ...a,
+                  revenueGenerated: a.revenueGenerated + deal.value,
+                  totalResolved: a.totalResolved + 1,
+                  conversionRate: Math.min(100, Math.round(a.conversionRate * 1.05 * 10) / 10),
+                }
+              : a
+          )
+        );
+      }
+    }
+
+    setDeals((prev) => {
+      const updatedDeal: Deal = { ...deal, stage: targetStage, updatedAt: today };
+      const withoutMoved = prev.filter((d) => d.id !== dealId);
+
+      if (!targetDealId) {
+        return [...withoutMoved, updatedDeal];
+      }
+
+      const targetIdx = withoutMoved.findIndex((d) => d.id === targetDealId);
+      if (targetIdx === -1) {
+        return [...withoutMoved, updatedDeal];
+      }
+
+      const insertIdx = position === 'before' ? targetIdx : targetIdx + 1;
+      const copy = [...withoutMoved];
+      copy.splice(insertIdx, 0, updatedDeal);
+      return copy;
+    });
+
+    addAuditEvent({
+      type: 'transbordo',
+      title: 'Card Reposicionado no Funil',
+      description: `Oportunidade "${deal.title}" foi reposicionada via arrastar e soltar (Drag & Drop) para a etapa [${targetStage.toUpperCase()}].`,
+      author: currentAgent.name,
+      badge: 'Drag & Drop',
+    });
+  };
+
   const updateDeal = (dealId: string, updates: Partial<Deal>) => {
     const today = new Date().toISOString().split('T')[0];
     setDeals((prev) =>
@@ -2320,6 +2389,43 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setTickets((prev) =>
       prev.map((t) => (t.id === ticketId ? { ...t, phase: newPhase } : t))
     );
+  };
+
+  const repositionTicket = (
+    ticketId: string,
+    targetPhase: ChatPhase,
+    targetTicketId?: string | null,
+    position: 'before' | 'after' = 'after'
+  ) => {
+    const ticket = tickets.find((t) => t.id === ticketId);
+    if (!ticket) return;
+
+    setTickets((prev) => {
+      const updatedTicket: ChatTicket = { ...ticket, phase: targetPhase };
+      const withoutMoved = prev.filter((t) => t.id !== ticketId);
+
+      if (!targetTicketId) {
+        return [...withoutMoved, updatedTicket];
+      }
+
+      const targetIdx = withoutMoved.findIndex((t) => t.id === targetTicketId);
+      if (targetIdx === -1) {
+        return [...withoutMoved, updatedTicket];
+      }
+
+      const insertIdx = position === 'before' ? targetIdx : targetIdx + 1;
+      const copy = [...withoutMoved];
+      copy.splice(insertIdx, 0, updatedTicket);
+      return copy;
+    });
+
+    addAuditEvent({
+      type: 'transbordo',
+      title: 'Atendimento Reposicionado no Kanban',
+      description: `Atendimento de "${ticket.contactName}" (${ticket.protocol}) reposicionado via Drag & Drop para a fase [${targetPhase.toUpperCase()}].`,
+      author: currentAgent.name,
+      badge: 'Kanban Move',
+    });
   };
 
   const transferTicket = (
@@ -2687,10 +2793,12 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         switchCurrentAgent,
         addDeal,
         updateDealStage,
+        repositionDeal,
         updateDeal,
         deleteDeal,
         sendChatMessage,
         updateTicketPhase,
+        repositionTicket,
         transferTicket,
         assignTicketToAgent,
         triggerAiFallbackForTicket,

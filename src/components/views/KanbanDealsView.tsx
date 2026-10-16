@@ -14,6 +14,8 @@ import {
   ArrowRight,
   Sparkles,
   MessageSquare,
+  GripVertical,
+  Move,
 } from 'lucide-react';
 import { useCRM } from '../../context/CRMContext';
 import { Deal, DealStage } from '../../types/crm';
@@ -35,6 +37,7 @@ export const KanbanDealsView: React.FC = () => {
     currentAgent,
     canViewAllDepartmentsAndTickets,
     updateDealStage,
+    repositionDeal,
     addDeal,
     deleteDeal,
     setIsScheduleModalOpen,
@@ -46,6 +49,12 @@ export const KanbanDealsView: React.FC = () => {
   const [selectedDept, setSelectedDept] = useState<string>('all');
   const [selectedAgent, setSelectedAgent] = useState<string>('all');
   const [isNewDealModalOpen, setIsNewDealModalOpen] = useState(false);
+
+  // Drag and Drop States
+  const [draggedDealId, setDraggedDealId] = useState<string | null>(null);
+  const [dragOverStage, setDragOverStage] = useState<DealStage | null>(null);
+  const [dragOverTargetDealId, setDragOverTargetDealId] = useState<string | null>(null);
+  const [dropInsertPosition, setDropInsertPosition] = useState<'before' | 'after'>('after');
 
   // New Deal Form State
   const [newTitle, setNewTitle] = useState('');
@@ -196,22 +205,56 @@ export const KanbanDealsView: React.FC = () => {
           </div>
         )}
 
-        <div className="text-slate-500 font-medium">
-          Exibindo <strong>{filteredDeals.length}</strong> negociações ativas
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 px-3 py-1 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-semibold shadow-2xs">
+            <Move className="w-3.5 h-3.5 text-emerald-600 animate-pulse" />
+            <span>🖐️ Segure com o mouse e arraste para reposicionar</span>
+          </div>
+          <div className="text-slate-500 font-medium">
+            Exibindo <strong>{filteredDeals.length}</strong> negociações ativas
+          </div>
         </div>
       </div>
 
-      {/* Kanban Board Grid */}
+      {/* Kanban Board Grid with Drag & Drop */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 overflow-x-auto pb-4">
         {stages.map((stage) => {
           const stageDeals = filteredDeals.filter((d) => d.stage === stage.id);
           const stageValue = stageDeals.reduce((sum, d) => sum + d.value, 0);
+          const isColumnHovered = dragOverStage === stage.id && draggedDealId !== null;
 
           return (
             <div
               key={stage.id}
-              className={`rounded-2xl border p-3 flex flex-col justify-between min-h-[550px] shadow-2xs ${stage.bg} ${
-                stage.id === 'fechado_ganho'
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                if (dragOverStage !== stage.id) {
+                  setDragOverStage(stage.id);
+                }
+              }}
+              onDragEnter={(e) => {
+                e.preventDefault();
+                setDragOverStage(stage.id);
+              }}
+              onDragLeave={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                  if (dragOverStage === stage.id) setDragOverStage(null);
+                }
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (draggedDealId) {
+                  repositionDeal(draggedDealId, stage.id, null);
+                  setDraggedDealId(null);
+                  setDragOverStage(null);
+                  setDragOverTargetDealId(null);
+                }
+              }}
+              className={`rounded-2xl border p-3 flex flex-col justify-between min-h-[560px] shadow-2xs transition-all duration-200 ${stage.bg} ${
+                isColumnHovered
+                  ? 'ring-2 ring-emerald-500 ring-offset-2 border-emerald-400 bg-emerald-50/70 shadow-md scale-[1.01]'
+                  : stage.id === 'fechado_ganho'
                   ? 'border-emerald-300'
                   : 'border-slate-200/90'
               }`}
@@ -227,111 +270,195 @@ export const KanbanDealsView: React.FC = () => {
                   </span>
                 </div>
 
-                <div className="mt-1.5 mb-3 text-[11px] font-mono text-slate-500 font-medium">
-                  R$ {stageValue.toLocaleString('pt-BR')}
+                <div className="mt-1.5 mb-3 text-[11px] font-mono text-slate-500 font-medium flex items-center justify-between">
+                  <span>R$ {stageValue.toLocaleString('pt-BR')}</span>
+                  {isColumnHovered && (
+                    <span className="text-[10px] font-bold text-emerald-700 animate-pulse">
+                      Soltar aqui 📥
+                    </span>
+                  )}
                 </div>
+
+                {/* Dropzone Hint when dragging over this column */}
+                {isColumnHovered && (
+                  <div className="mb-3 p-2.5 border-2 border-dashed border-emerald-500 bg-emerald-100/60 rounded-xl text-center text-[11px] font-bold text-emerald-800 animate-pulse flex items-center justify-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Solte para posicionar em {stage.label.split('.')[1] || stage.label}</span>
+                  </div>
+                )}
 
                 {/* Deal Cards Container */}
                 <div className="space-y-3">
                   {stageDeals.map((deal) => {
                     const assignedAgent = agents.find((a) => a.id === deal.assignedAgentId);
+                    const isBeingDragged = draggedDealId === deal.id;
+                    const isTargetOfHover = dragOverTargetDealId === deal.id && draggedDealId !== deal.id;
 
                     return (
-                      <div
-                        key={deal.id}
-                        className="bg-white rounded-xl border border-slate-200 p-3.5 shadow-2xs hover:shadow-md transition-all group relative"
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <h4 className="font-bold text-slate-900 text-xs leading-snug line-clamp-2">
-                            {deal.title}
-                          </h4>
-                          <span className="text-xs font-black text-emerald-600 font-mono whitespace-nowrap">
-                            R$ {(deal.value / 1000).toFixed(0)}k
-                          </span>
-                        </div>
-
-                        <div className="mt-2 space-y-1 text-[11px] text-slate-600">
-                          <div className="flex items-center gap-1.5 font-medium text-slate-800">
-                            <Building className="w-3 h-3 text-slate-400 shrink-0" />
-                            <span className="truncate">{deal.companyName}</span>
-                          </div>
-                          <div className="flex items-center gap-1.5">
-                            <User className="w-3 h-3 text-slate-400 shrink-0" />
-                            <span className="truncate">{deal.contactName}</span>
-                          </div>
-                          <div className="flex items-center gap-1.5 text-slate-500">
-                            <Phone className="w-3 h-3 text-emerald-500 shrink-0" />
-                            <span>{deal.contactPhone}</span>
-                          </div>
-                        </div>
-
-                        {deal.meetingTime && (
-                          <div className="mt-2.5 p-1.5 bg-amber-50 border border-amber-200/60 rounded-md text-[10px] text-amber-800 flex items-center gap-1 font-medium">
-                            <Calendar className="w-3 h-3 text-amber-600 shrink-0" />
-                            <span className="truncate">{deal.meetingTime}</span>
-                          </div>
+                      <div key={deal.id} className="relative">
+                        {/* Insertion line indicator above */}
+                        {isTargetOfHover && dropInsertPosition === 'before' && (
+                          <div className="h-1.5 bg-emerald-500 rounded-full mb-2 shadow-xs animate-pulse ring-2 ring-emerald-300" />
                         )}
 
-                        <div className="mt-2.5 pt-2 border-t border-slate-100 flex items-center justify-between text-[10px]">
-                          <div className="flex items-center gap-1.5">
-                            {assignedAgent && (
-                              <img
-                                src={assignedAgent.avatar}
-                                alt={assignedAgent.name}
-                                className="w-5 h-5 rounded-full object-cover"
-                                title={`Atendente: ${assignedAgent.name}`}
-                              />
-                            )}
-                            <span className="text-slate-500 truncate max-w-[80px]">
-                              {assignedAgent?.name.split(' ')[0]}
+                        <div
+                          draggable={true}
+                          onDragStart={(e) => {
+                            e.dataTransfer.setData('text/plain', deal.id);
+                            e.dataTransfer.effectAllowed = 'move';
+                            setDraggedDealId(deal.id);
+                          }}
+                          onDragEnd={() => {
+                            setDraggedDealId(null);
+                            setDragOverStage(null);
+                            setDragOverTargetDealId(null);
+                          }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            const isBefore = e.clientY - rect.top < rect.height / 2;
+                            setDragOverStage(stage.id);
+                            setDragOverTargetDealId(deal.id);
+                            setDropInsertPosition(isBefore ? 'before' : 'after');
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (draggedDealId) {
+                              repositionDeal(draggedDealId, stage.id, deal.id, dropInsertPosition);
+                              setDraggedDealId(null);
+                              setDragOverStage(null);
+                              setDragOverTargetDealId(null);
+                            }
+                          }}
+                          className={`bg-white rounded-xl border p-3.5 shadow-2xs transition-all group relative cursor-grab active:cursor-grabbing select-none hover:shadow-md hover:border-emerald-300 ${
+                            isBeingDragged
+                              ? 'opacity-30 border-dashed border-emerald-500 bg-emerald-50/40 scale-[0.98]'
+                              : isTargetOfHover
+                              ? 'border-emerald-400 shadow-sm ring-1 ring-emerald-300'
+                              : 'border-slate-200'
+                          }`}
+                        >
+                          {/* Top Row: Drag Handle + Title + Value */}
+                          <div className="flex items-start justify-between gap-1.5">
+                            <div className="flex items-start gap-1 min-w-0">
+                              <span
+                                className="cursor-grab active:cursor-grabbing p-0.5 text-slate-300 hover:text-slate-600 rounded shrink-0 mt-0.5 transition-colors"
+                                title="Segure com o mouse e arraste para reposicionar no Kanban"
+                              >
+                                <GripVertical className="w-3.5 h-3.5" />
+                              </span>
+                              <h4 className="font-bold text-slate-900 text-xs leading-snug line-clamp-2">
+                                {deal.title}
+                              </h4>
+                            </div>
+                            <span className="text-xs font-black text-emerald-600 font-mono whitespace-nowrap shrink-0">
+                              R$ {(deal.value / 1000).toFixed(0)}k
                             </span>
                           </div>
 
-                          <div className="flex items-center gap-1">
-                            {/* Schedule in Google Calendar */}
-                            <button
-                              onClick={() => {
-                                setScheduleTargetLead({
-                                  name: deal.contactName,
-                                  phone: deal.contactPhone,
-                                  dealId: deal.id,
-                                });
-                                setIsScheduleModalOpen(true);
-                              }}
-                              className="p-1 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded"
-                              title="Agendar Demonstração no Google Calendar"
-                            >
-                              <Calendar className="w-3 h-3" />
-                            </button>
+                          <div className="mt-2 space-y-1 text-[11px] text-slate-600 pl-4">
+                            <div className="flex items-center gap-1.5 font-medium text-slate-800">
+                              <Building className="w-3 h-3 text-slate-400 shrink-0" />
+                              <span className="truncate">{deal.companyName}</span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <User className="w-3 h-3 text-slate-400 shrink-0" />
+                              <span className="truncate">{deal.contactName}</span>
+                            </div>
+                            <div className="flex items-center gap-1.5 text-slate-500">
+                              <Phone className="w-3 h-3 text-emerald-500 shrink-0" />
+                              <span>{deal.contactPhone}</span>
+                            </div>
+                          </div>
 
-                            {/* Open in Chat */}
-                            <button
-                              onClick={() => setActiveView('inbox')}
-                              className="p-1 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded"
-                              title="Conversar no WhatsApp"
+                          {deal.meetingTime && (
+                            <div className="mt-2.5 p-1.5 bg-amber-50 border border-amber-200/60 rounded-md text-[10px] text-amber-800 flex items-center gap-1 font-medium ml-4">
+                              <Calendar className="w-3 h-3 text-amber-600 shrink-0" />
+                              <span className="truncate">{deal.meetingTime}</span>
+                            </div>
+                          )}
+
+                          <div className="mt-2.5 pt-2 border-t border-slate-100 flex items-center justify-between text-[10px] pl-4">
+                            <div className="flex items-center gap-1.5">
+                              {assignedAgent && (
+                                <img
+                                  src={assignedAgent.avatar}
+                                  alt={assignedAgent.name}
+                                  className="w-5 h-5 rounded-full object-cover"
+                                  title={`Atendente: ${assignedAgent.name}`}
+                                />
+                              )}
+                              <span className="text-slate-500 truncate max-w-[80px]">
+                                {assignedAgent?.name.split(' ')[0]}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-1">
+                              {/* Schedule in Google Calendar */}
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setScheduleTargetLead({
+                                    name: deal.contactName,
+                                    phone: deal.contactPhone,
+                                    dealId: deal.id,
+                                  });
+                                  setIsScheduleModalOpen(true);
+                                }}
+                                className="p-1 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded"
+                                title="Agendar Demonstração no Google Calendar"
+                              >
+                                <Calendar className="w-3 h-3" />
+                              </button>
+
+                              {/* Open in Chat */}
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveView('inbox');
+                                }}
+                                className="p-1 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded"
+                                title="Conversar no WhatsApp"
+                              >
+                                <MessageSquare className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Stage Mover Selector (Fallback / Quick Selection) */}
+                          <div className="mt-2 pt-2 border-t border-slate-50">
+                            <select
+                              value={deal.stage}
+                              onChange={(e) => {
+                                e.stopPropagation();
+                                updateDealStage(deal.id, e.target.value as DealStage);
+                              }}
+                              className="w-full text-[10px] font-semibold py-1 px-1.5 rounded bg-slate-50 border border-slate-200 text-slate-700 focus:outline-none"
                             >
-                              <MessageSquare className="w-3 h-3" />
-                            </button>
+                              {stages.map((s) => (
+                                <option key={s.id} value={s.id}>
+                                  Mover: {s.label}
+                                </option>
+                              ))}
+                            </select>
                           </div>
                         </div>
 
-                        {/* Stage Mover Selector */}
-                        <div className="mt-2 pt-2 border-t border-slate-50">
-                          <select
-                            value={deal.stage}
-                            onChange={(e) => updateDealStage(deal.id, e.target.value as DealStage)}
-                            className="w-full text-[10px] font-semibold py-1 px-1.5 rounded bg-slate-50 border border-slate-200 text-slate-700 focus:outline-none"
-                          >
-                            {stages.map((s) => (
-                              <option key={s.id} value={s.id}>
-                                Mover para: {s.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
+                        {/* Insertion line indicator below */}
+                        {isTargetOfHover && dropInsertPosition === 'after' && (
+                          <div className="h-1.5 bg-emerald-500 rounded-full mt-2 shadow-xs animate-pulse ring-2 ring-emerald-300" />
+                        )}
                       </div>
                     );
                   })}
+
+                  {stageDeals.length === 0 && (
+                    <div className="p-6 border-2 border-dashed border-slate-200/80 rounded-xl text-center text-slate-400 text-[11px]">
+                      Arraste um card aqui para esta etapa
+                    </div>
+                  )}
                 </div>
               </div>
 
