@@ -231,3 +231,31 @@ export interface GoogleCalendarMeeting {
   dealId?: string;
   meetLink?: string;
 }
+
+export interface LivePageVisitor {
+  visitorId: string;
+  tenantId: string;
+  tenantSlug: string;
+  companyName: string;
+  pageUrl: string;
+  pageTitle: string;
+  referrer?: string;
+  embedType: 'Widget JS Flutuante' | 'Formulário HTML Puro' | 'Iframe Embed';
+  isWidgetOpen?: boolean;
+  startedAt: number;
+  lastSeenAt: number;
+  status: 'online' | 'left';
+}
+
+export interface PageVisitSummary {
+  pageUrl: string;
+  pageTitle: string;
+  tenantId: string;
+  tenantSlug: string;
+  embedType: 'Widget JS Flutuante' | 'Formulário HTML Puro' | 'Iframe Embed';
+  onlineNow: number;
+  totalVisits: number;
+  lastVisitTime: string;
+  lastSeenAt: number;
+}
+

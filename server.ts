@@ -88,6 +88,62 @@ interface ExternalLeadSession {
 
 const externalSessions = new Map<string, ExternalLeadSession>();
 
+interface ExternalPageVisitor {
+  visitorId: string;
+  tenantId: string;
+  tenantSlug: string;
+  companyName: string;
+  pageUrl: string;
+  pageTitle: string;
+  referrer?: string;
+  embedType: 'Widget JS Flutuante' | 'Formulário HTML Puro' | 'Iframe Embed';
+  isWidgetOpen?: boolean;
+  startedAt: number;
+  lastSeenAt: number;
+  status: 'online' | 'left';
+}
+
+const visitorSessions = new Map<string, ExternalPageVisitor>();
+const pageTotalVisits = new Map<string, number>();
+
+function recordVisitorHeartbeat(data: any) {
+  if (!data || typeof data !== 'object') return;
+  const visitorId = String(data.visitorId || `vis-${Date.now()}`).trim();
+  const pageUrl = String(data.pageUrl || 'https://site-externo.com.br/contato').trim();
+  const pageTitle = String(data.pageTitle || 'Página de Contato (Formulário Embedado)').trim();
+  const tenantId = String(data.tenantId || '').trim();
+  const tenantSlug = String(data.tenantSlug || '').trim();
+  const companyName = String(data.companyName || '').trim();
+  const embedType: 'Widget JS Flutuante' | 'Formulário HTML Puro' | 'Iframe Embed' =
+    data.embedType === 'Formulário HTML Puro' || data.embedType === 'Iframe Embed'
+      ? data.embedType
+      : 'Widget JS Flutuante';
+  const status: 'online' | 'left' = data.status === 'left' ? 'left' : 'online';
+  const nowMs = Date.now();
+
+  const existing = visitorSessions.get(visitorId);
+  const pageKey = `${tenantId || tenantSlug || 'global'}::${pageUrl}`;
+
+  if (!existing || existing.pageUrl !== pageUrl) {
+    pageTotalVisits.set(pageKey, (pageTotalVisits.get(pageKey) || 0) + 1);
+  }
+
+  visitorSessions.set(visitorId, {
+    visitorId,
+    tenantId,
+    tenantSlug,
+    companyName,
+    pageUrl,
+    pageTitle,
+    referrer: data.referrer || '',
+    embedType,
+    isWidgetOpen: Boolean(data.isWidgetOpen),
+    startedAt: existing ? existing.startedAt : nowMs,
+    lastSeenAt: nowMs,
+    status,
+  });
+}
+
 function getNowTimeStr(): string {
   const now = new Date();
   return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
@@ -182,6 +238,184 @@ app.post('/api/storage/tenants', (req: Request, res: Response) => {
     });
   }
   return res.status(400).json({ error: 'Invalid tenants payload' });
+});
+
+// WhatsApp QR & Origin Connection Sessions
+interface WhatsAppQrSession {
+  token: string;
+  tenantId: string;
+  companyName: string;
+  phone: string;
+  engine: string;
+  status: 'pending' | 'connected';
+  createdAt: number;
+  connectedAt?: number;
+}
+const whatsappQrSessions = new Map<string, WhatsAppQrSession>();
+
+// Initialize or update QR session
+app.post('/api/whatsapp/qr-init', (req: Request, res: Response) => {
+  const { token, tenantId, companyName, phone, engine } = req.body || {};
+  const sessionToken = String(token || `token-${Date.now()}`).trim();
+  whatsappQrSessions.set(sessionToken, {
+    token: sessionToken,
+    tenantId: String(tenantId || ''),
+    companyName: String(companyName || 'Empresa'),
+    phone: String(phone || ''),
+    engine: String(engine || 'evolution'),
+    status: 'pending',
+    createdAt: Date.now(),
+  });
+  return res.json({ success: true, token: sessionToken, status: 'pending' });
+});
+
+// Check status of QR session (polled by CRM desktop UI while QR is on screen)
+app.get('/api/whatsapp/qr-status', (req: Request, res: Response) => {
+  const token = String(req.query.token || '').trim();
+  const tenantId = String(req.query.tenantId || '').trim();
+
+  let session: WhatsAppQrSession | undefined;
+  if (token) {
+    session = whatsappQrSessions.get(token);
+  }
+  if (!session && tenantId) {
+    for (const s of whatsappQrSessions.values()) {
+      if (s.tenantId === tenantId) {
+        session = s;
+        break;
+      }
+    }
+  }
+
+  // Also check if tenant is marked as open in stored cache
+  if (tenantId && storedTenantsCache) {
+    const cachedTenant = storedTenantsCache.find((t: any) => t.id === tenantId);
+    if (cachedTenant && cachedTenant.whatsappStatus === 'open') {
+      return res.json({
+        success: true,
+        status: 'connected',
+        connectedAt: Date.now(),
+        tenantId,
+        phone: cachedTenant.primaryPhoneNumber,
+      });
+    }
+  }
+
+  if (session) {
+    return res.json({
+      success: true,
+      status: session.status,
+      connectedAt: session.connectedAt,
+      tenantId: session.tenantId,
+      phone: session.phone,
+    });
+  }
+
+  return res.json({ success: true, status: 'pending' });
+});
+
+// Connect WhatsApp session directly
+app.post('/api/whatsapp/connect-session', (req: Request, res: Response) => {
+  const { tenantId, phone, engine, token } = req.body || {};
+  const cleanPhone = String(phone || '').replace(/\D/g, '');
+
+  if (token && whatsappQrSessions.has(token)) {
+    const s = whatsappQrSessions.get(token)!;
+    s.status = 'connected';
+    s.connectedAt = Date.now();
+    whatsappQrSessions.set(token, s);
+  }
+
+  if (tenantId && storedTenantsCache) {
+    const updated = storedTenantsCache.map((t: any) => {
+      if (t.id === tenantId) {
+        return {
+          ...t,
+          whatsappStatus: 'open',
+          ...(phone ? { primaryPhoneNumber: String(phone).trim() } : {}),
+          ...(engine ? { whatsappEngine: engine } : {}),
+        };
+      }
+      return t;
+    });
+    persistTenantsToDisk(updated);
+  }
+
+  return res.json({
+    success: true,
+    status: 'connected',
+    tenantId,
+    phone: cleanPhone,
+    connectedAt: Date.now(),
+  });
+});
+
+// Disconnect WhatsApp session
+app.post('/api/whatsapp/disconnect-session', (req: Request, res: Response) => {
+  const { tenantId, token } = req.body || {};
+  if (token && whatsappQrSessions.has(token)) {
+    const s = whatsappQrSessions.get(token)!;
+    s.status = 'pending';
+    whatsappQrSessions.set(token, s);
+  }
+  if (tenantId && storedTenantsCache) {
+    const updated = storedTenantsCache.map((t: any) => {
+      if (t.id === tenantId) {
+        return {
+          ...t,
+          whatsappStatus: 'qrcode',
+        };
+      }
+      return t;
+    });
+    persistTenantsToDisk(updated);
+  }
+  return res.json({ success: true, status: 'disconnected', tenantId });
+});
+
+// QR Bridge: When smartphone camera scans the QR code, this endpoint connects WhatsApp in the CRM and redirects the phone to wa.me!
+app.get('/api/whatsapp/qr-bridge', (req: Request, res: Response) => {
+  const token = String(req.query.token || '').trim();
+  const tenantId = String(req.query.tenantId || '').trim();
+  const phone = String(req.query.phone || '').trim();
+  const companyName = String(req.query.name || 'OmniPulse').trim();
+  const cleanPhone = phone.replace(/\D/g, '') || '5511987654321';
+
+  // Mark session as connected
+  if (token) {
+    const existing = whatsappQrSessions.get(token);
+    whatsappQrSessions.set(token, {
+      token,
+      tenantId: tenantId || existing?.tenantId || '',
+      companyName: companyName || existing?.companyName || 'Empresa',
+      phone: phone || existing?.phone || cleanPhone,
+      engine: existing?.engine || 'evolution',
+      status: 'connected',
+      createdAt: existing?.createdAt || Date.now(),
+      connectedAt: Date.now(),
+    });
+  }
+
+  // Update persistent tenant storage
+  if (tenantId && storedTenantsCache) {
+    const updated = storedTenantsCache.map((t: any) => {
+      if (t.id === tenantId) {
+        return {
+          ...t,
+          whatsappStatus: 'open',
+          ...(phone ? { primaryPhoneNumber: phone } : {}),
+        };
+      }
+      return t;
+    });
+    persistTenantsToDisk(updated);
+  }
+
+  const welcomeMsg = `Olá! Acesso ao WhatsApp de origem da empresa ${companyName} (+${cleanPhone}). Conexão com OmniPulse CRM ativada com sucesso!`;
+  const whatsappUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(welcomeMsg)}`;
+
+  // Redirect to official WhatsApp
+  return res.redirect(whatsappUrl);
 });
 
 // Evolution API, Uazapi & Meta Cloud API Webhook test
@@ -394,14 +628,61 @@ app.post('/api/webhook/web-lead', (req: Request, res: Response) => {
   });
 });
 
-// Poll endpoint for CRM Frontend to receive all incoming external widget calls & messages in real time
+// Real-time Visitor & Embedded Page Heartbeat (POST + 1x1 Beacon GET)
+app.post('/api/webhook/visitor-heartbeat', (req: Request, res: Response) => {
+  recordVisitorHeartbeat(req.body);
+  return res.status(200).json({ success: true });
+});
+
+app.get('/api/webhook/visitor-beacon', (req: Request, res: Response) => {
+  try {
+    const rawData = req.query.d as string;
+    if (rawData) {
+      recordVisitorHeartbeat(JSON.parse(rawData));
+    } else if (req.query.pageUrl || req.query.tenant) {
+      recordVisitorHeartbeat({
+        visitorId: req.query.visitorId || `vis-html-${req.ip || 'ext'}`,
+        tenantId: req.query.tenantId || '',
+        tenantSlug: req.query.tenant || '',
+        companyName: req.query.company || '',
+        pageUrl: req.query.pageUrl || req.headers.referer || 'Página com Formulário HTML Puro',
+        pageTitle: req.query.pageTitle || 'Página com Formulário de Contato Embedado',
+        embedType: req.query.embedType || 'Formulário HTML Puro',
+        status: 'online',
+      });
+    }
+  } catch {
+    // ignore
+  }
+  const gif = Buffer.from(
+    'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
+    'base64'
+  );
+  res.setHeader('Content-Type', 'image/gif');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  return res.status(200).send(gif);
+});
+
+// Poll endpoint for CRM Frontend to receive all incoming external widget calls, messages & live visitors in real time
 app.get('/api/webhook/external-events', (_req: Request, res: Response) => {
   const sessions = Array.from(externalSessions.values()).sort(
     (a, b) => b.createdAt - a.createdAt
   );
+  const nowMs = Date.now();
+  // Expire visitors inactive for > 45 seconds
+  const visitors = Array.from(visitorSessions.values()).map((v) => ({
+    ...v,
+    status: v.status === 'left' || nowMs - v.lastSeenAt > 45000 ? 'left' : 'online',
+  }));
+  const pageCounts: Record<string, number> = {};
+  pageTotalVisits.forEach((count, key) => {
+    pageCounts[key] = count;
+  });
   return res.status(200).json({
     success: true,
     sessions,
+    visitors,
+    pageCounts,
   });
 });
 

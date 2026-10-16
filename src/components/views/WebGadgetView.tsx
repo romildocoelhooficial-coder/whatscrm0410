@@ -35,6 +35,11 @@ export const WebGadgetView: React.FC = () => {
     currentTenant,
     setActiveView,
     setSelectedTicket,
+    liveVisitors,
+    embeddedPageVisits,
+    totalOnlineVisitorsCount,
+    totalEmbeddedPageVisitsCount,
+    simulateExternalPageVisit,
   } = useCRM();
 
   const [copiedScript, setCopiedScript] = useState(false);
@@ -72,10 +77,11 @@ export const WebGadgetView: React.FC = () => {
   const appOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://crm.omnipulse.io';
 
   // 100% Self-Contained Autonomous JavaScript Snippet for External Sites (Scoped to this Company ONLY!)
+  // Includes Floating Button in the Bottom-Right Corner + Real-Time Page & Visitor Counter
   const standaloneScriptCode = `<!-- ==================================================== -->
-<!-- GADGET & FORMULÁRIO EXCLUSIVO DA EMPRESA: ${(currentTenant?.name || 'EMPRESA').toUpperCase()} -->
+<!-- GADGET & FORMULÁRIO FLUTUANTE EXCLUSIVO DA EMPRESA: ${(currentTenant?.name || 'EMPRESA').toUpperCase()} -->
 <!-- Tenant ID: ${currentTenant?.id} | Rota: /?empresa=${currentTenant?.slug} -->
-<!-- Cole este código antes da tag </body> do site da sua empresa -->
+<!-- Cole este código em qualquer lugar da página externa (head ou antes de </body>) -->
 <!-- ==================================================== -->
 <script>
 (function() {
@@ -88,276 +94,302 @@ export const WebGadgetView: React.FC = () => {
     brandSubtitle: "${webGadgetConfig.brandSubtitle}",
     primaryColor: "${webGadgetConfig.primaryColor || '#10B981'}",
     position: "${webGadgetConfig.buttonPosition || 'bottom-right'}",
+    autoOpen: ${Boolean(webGadgetConfig.autoOpen)},
     greeting: "${webGadgetConfig.greetingMessage.replace(/"/g, '\\"')}",
     departments: ${JSON.stringify(departments.map((d) => ({ id: d.id, name: d.name })))},
     apiOrigin: "${appOrigin}",
     webhookUrl: "${appOrigin}/api/webhook/web-lead?tenant=${encodeURIComponent(currentTenant?.slug || '')}"
   };
 
-  var root = document.createElement('div');
-  root.id = 'omnipulse-hybrid-widget';
-  document.body.appendChild(root);
+  function mountOmniPulseWidget() {
+    if (document.getElementById('omnipulse-hybrid-widget')) return;
 
-  var isLeft = config.position === 'bottom-left';
-  var posCss = isLeft ? 'left: 20px; bottom: 20px;' : 'right: 20px; bottom: 20px;';
+    var root = document.createElement('div');
+    root.id = 'omnipulse-hybrid-widget';
+    document.body.appendChild(root);
 
-  var style = document.createElement('style');
-  style.innerHTML = \`
-    #omni-bubble-btn {
-      position: fixed; \${posCss} z-index: 999999;
-      padding: 14px 20px; border-radius: 999px;
-      background: \${config.primaryColor}; color: #ffffff;
-      box-shadow: 0 10px 25px rgba(0,0,0,0.25);
-      border: none; cursor: pointer; display: flex;
-      align-items: center; justify-content: center; gap: 10px;
-      font-family: sans-serif; font-weight: bold; font-size: 13px;
-      transition: all 0.25s ease;
-    }
-    #omni-bubble-btn:hover { transform: scale(1.05); }
-    #omni-chat-modal {
-      display: none; position: fixed; \${posCss} z-index: 999999;
-      width: 380px; max-width: calc(100vw - 32px);
-      background: #ffffff; border-radius: 24px;
-      box-shadow: 0 20px 50px rgba(15,23,42,0.25);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      overflow: hidden; border: 1px solid #e2e8f0;
-    }
-    .omni-head {
-      background: \${config.primaryColor}; color: #ffffff;
-      padding: 16px 20px; display: flex; justify-content: space-between; align-items: center;
-    }
-    .omni-content { padding: 16px 20px; max-height: 75vh; overflow-y: auto; text-align: left; }
-    .omni-field {
-      width: 100%; padding: 9px 12px; margin-bottom: 10px;
-      border: 1px solid #cbd5e1; border-radius: 10px; font-size: 12px; box-sizing: border-box;
-    }
-    .omni-channels { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
-    .omni-ch-btn {
-      padding: 10px; border: 2px solid #e2e8f0; border-radius: 12px; background: #f8fafc;
-      cursor: pointer; font-weight: bold; font-size: 12px; text-align: center;
-    }
-    .omni-ch-btn.active { border-color: \${config.primaryColor}; background: #ecfdf5; color: #065f46; }
-    .omni-btn-send {
-      width: 100%; padding: 12px; background: \${config.primaryColor};
-      color: #ffffff; border: none; border-radius: 12px; font-weight: bold; cursor: pointer; font-size: 13px;
-    }
-  \`;
-  document.head.appendChild(style);
+    var isLeft = config.position === 'bottom-left';
+    var btnPosCss = isLeft ? 'left: 24px; bottom: 24px;' : 'right: 24px; bottom: 24px;';
+    var modalPosCss = isLeft ? 'left: 24px; bottom: 92px;' : 'right: 24px; bottom: 92px;';
 
-  var currentChannel = 'chat';
-  var activeSessionId = '';
-  var renderedMsgIds = {};
-
-  // Hidden Cross-Domain Real-Time Bridge Iframe (Connects External Site directly to CRM Attendant Inbox & Sound Chime)
-  var bridgeFrame = document.createElement('iframe');
-  bridgeFrame.style.cssText = 'display:none;width:0;height:0;border:0;position:absolute;';
-  bridgeFrame.src = config.apiOrigin + '/?embed=bridge&tenant=' + encodeURIComponent(config.tenantSlug) + '&tenantId=' + encodeURIComponent(config.tenantId);
-  document.body.appendChild(bridgeFrame);
-
-  window.addEventListener('message', function(ev) {
-    var d = ev.data;
-    if (d && d.type === 'OMNIPULSE_AGENT_REPLY' && d.sessionId === activeSessionId && d.message) {
-      appendBubble(d.message.id, d.message.sender, d.message.senderName, d.message.text);
-    }
-  });
-
-  root.innerHTML = \`
-    <button id="omni-bubble-btn">💬 Iniciar Atendimento (Chat / WhatsApp)</button>
-    <div id="omni-chat-modal">
-      <div class="omni-head" id="omni-modal-head">
-        <div>
-          <div style="font-weight:800;font-size:15px;">\${config.brandTitle}</div>
-          <div style="font-size:11px;opacity:0.9;">\${config.brandSubtitle}</div>
-        </div>
-        <button id="omni-close-x" style="background:none;border:none;color:#fff;font-size:22px;cursor:pointer;">&times;</button>
-      </div>
-      <div class="omni-content" id="omni-form-step">
-        <p style="font-size:12px;color:#475569;margin:0 0 10px 0;">\${config.greeting}</p>
-        <div class="omni-channels">
-          <button type="button" class="omni-ch-btn active" id="ch-chat">💬 Via Chat Online</button>
-          <button type="button" class="omni-ch-btn" id="ch-wa">📱 Via WhatsApp</button>
-        </div>
-        <form id="omni-lead-form">
-          <input class="omni-field" type="text" id="omni-name" required placeholder="Seu Nome Completo *" />
-          <input class="omni-field" type="tel" id="omni-phone" required placeholder="WhatsApp com DDD *" />
-          <input class="omni-field" type="email" id="omni-email" placeholder="Seu E-mail" />
-          <select class="omni-field" id="omni-dept">
-            \${config.departments.map(function(d) { return '<option value="' + d.name + '">' + d.name + '</option>'; }).join('')}
-          </select>
-          <textarea class="omni-field" id="omni-msg" rows="2" required placeholder="Como podemos ajudar? *"></textarea>
-          <button type="submit" class="omni-btn-send" id="omni-submit-btn">Iniciar Atendimento via Chat</button>
-        </form>
-      </div>
-      <div class="omni-content" id="omni-dialog-step" style="display:none;padding:0;">
-        <div id="omni-messages" style="height:280px;overflow-y:auto;padding:14px;background:#f1f5f9;display:flex;flex-direction:column;gap:8px;"></div>
-        <form id="omni-reply-form" style="display:flex;gap:6px;padding:10px;border-top:1px solid #e2e8f0;background:#fff;">
-          <input type="text" id="omni-reply-input" required placeholder="Digite sua mensagem..." style="flex:1;padding:8px 12px;border:1px solid #cbd5e1;border-radius:10px;font-size:12px;" />
-          <button type="submit" style="padding:8px 14px;background:\${config.primaryColor};color:#fff;border:none;border-radius:10px;font-weight:bold;cursor:pointer;">Enviar</button>
-        </form>
-      </div>
-    </div>
-  \`;
-
-  var bubbleBtn = document.getElementById('omni-bubble-btn');
-  var chatModal = document.getElementById('omni-chat-modal');
-  var closeX = document.getElementById('omni-close-x');
-  var chChat = document.getElementById('ch-chat');
-  var chWa = document.getElementById('ch-wa');
-  var submitBtn = document.getElementById('omni-submit-btn');
-  var formStep = document.getElementById('omni-form-step');
-  var dialogStep = document.getElementById('omni-dialog-step');
-  var messagesBox = document.getElementById('omni-messages');
-
-  chChat.onclick = function() {
-    currentChannel = 'chat';
-    chChat.className = 'omni-ch-btn active';
-    chWa.className = 'omni-ch-btn';
-    submitBtn.innerText = 'Iniciar Atendimento via Chat';
-  };
-  chWa.onclick = function() {
-    currentChannel = 'whatsapp';
-    chWa.className = 'omni-ch-btn active';
-    chChat.className = 'omni-ch-btn';
-    submitBtn.innerText = 'Iniciar Diálogo via WhatsApp';
-  };
-  bubbleBtn.onclick = function() { chatModal.style.display = 'block'; bubbleBtn.style.display = 'none'; };
-  closeX.onclick = function() { chatModal.style.display = 'none'; bubbleBtn.style.display = 'flex'; };
-
-  function appendBubble(id, sender, senderName, text) {
-    if (id && renderedMsgIds[id]) return;
-    if (id) renderedMsgIds[id] = true;
-    var div = document.createElement('div');
-    var isMe = sender === 'client' || sender === 'contact';
-    div.style.cssText = 'align-self:' + (isMe ? 'flex-end' : 'flex-start') + ';max-width:82%;padding:8px 12px;border-radius:14px;font-size:12px;background:' + (isMe ? (currentChannel === 'whatsapp' ? '#dcf8c6' : '#2563eb') : '#ffffff') + ';color:' + (isMe && currentChannel !== 'whatsapp' ? '#ffffff' : '#0f172a') + ';box-shadow:0 1px 2px rgba(0,0,0,0.08);';
-    var headerHtml = !isMe && senderName ? '<div style="font-size:10px;font-weight:700;color:#059669;margin-bottom:2px;">' + senderName + '</div>' : '';
-    div.innerHTML = headerHtml + '<div>' + String(text).replace(/</g, '&lt;') + '</div>';
-    messagesBox.appendChild(div);
-    messagesBox.scrollTop = messagesBox.scrollHeight;
-  }
-
-  function pollRemoteMessages() {
-    if (!activeSessionId) return;
-    fetch(config.apiOrigin + '/api/webhook/web-chat/' + encodeURIComponent(activeSessionId) + '/messages')
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        if (data && Array.isArray(data.messages)) {
-          data.messages.forEach(function(m) {
-            appendBubble(m.id, m.sender, m.senderName, m.text);
-          });
-        }
-      })
-      .catch(function() {});
-  }
-
-  document.getElementById('omni-lead-form').onsubmit = function(e) {
-    e.preventDefault();
-    var name = document.getElementById('omni-name').value;
-    var phone = document.getElementById('omni-phone').value;
-    var email = document.getElementById('omni-email').value;
-    var dept = document.getElementById('omni-dept').value;
-    var msg = document.getElementById('omni-msg').value;
-
-    formStep.style.display = 'none';
-    dialogStep.style.display = 'block';
-    if (currentChannel === 'whatsapp') {
-      messagesBox.style.background = '#e5ddd5';
-    }
-
-    var nowMs = Date.now();
-    var dNow = new Date();
-    var timeStr = ('0' + dNow.getHours()).slice(-2) + ':' + ('0' + dNow.getMinutes()).slice(-2);
-    activeSessionId = 'ext-' + nowMs + '-' + Math.random().toString(36).slice(2, 6);
-    var protocol = (currentChannel === 'chat' ? 'OP-CHAT-' : 'OP-WA-') + String(nowMs).slice(-4);
-    var welcomeText = 'Olá ' + name + '! Recebemos sua mensagem via ' + (currentChannel === 'whatsapp' ? 'WhatsApp' : 'Chat Online') + ' para ' + config.companyName + ' no setor ' + dept + '. Um atendente já foi acionado e responderá aqui mesmo!';
-
-    var initMsgs = [
-      { id: 'm-ext-init-' + nowMs, sender: 'contact', senderName: name, text: msg, timestamp: timeStr, createdAt: nowMs },
-      { id: 'm-ext-welcome-' + (nowMs + 1), sender: 'agent', senderName: 'Atendimento ' + config.companyName, text: welcomeText, timestamp: timeStr, createdAt: nowMs + 1 }
-    ];
-
-    initMsgs.forEach(function(m) {
-      appendBubble(m.id, m.sender, m.senderName, m.text);
-    });
-
-    var sessionObj = {
-      sessionId: activeSessionId,
-      protocol: protocol,
-      tenantId: config.tenantId,
-      tenantSlug: config.tenantSlug,
-      companyName: config.companyName,
-      name: name,
-      phone: phone,
-      email: email,
-      department: dept,
-      originChannel: currentChannel,
-      createdAt: nowMs,
-      updatedAt: nowMs,
-      messages: initMsgs
-    };
-
-    fetch('https://ntfy.sh/omnipulse_live_hub_2026_v4', {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
-      body: JSON.stringify({ type: 'OMNIPULSE_EXTERNAL_SESSION', session: sessionObj })
-    }).catch(function() {});
-
-    try {
-      if (bridgeFrame && bridgeFrame.contentWindow) {
-        bridgeFrame.contentWindow.postMessage({ type: 'OMNIPULSE_EXTERNAL_SESSION', session: sessionObj }, '*');
+    var style = document.createElement('style');
+    style.innerHTML = \`
+      @keyframes omniPulseRing {
+        0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.55), 0 12px 28px rgba(15, 23, 42, 0.28); }
+        70% { box-shadow: 0 0 0 14px rgba(16, 185, 129, 0), 0 12px 28px rgba(15, 23, 42, 0.28); }
+        100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0), 0 12px 28px rgba(15, 23, 42, 0.28); }
       }
-    } catch(err) {}
+      @keyframes omniSlideUp {
+        from { opacity: 0; transform: translateY(14px) scale(0.97); }
+        to { opacity: 1; transform: translateY(0) scale(1); }
+      }
+      #omni-bubble-btn {
+        position: fixed !important; \${btnPosCss} z-index: 2147483647 !important;
+        padding: 14px 22px; border-radius: 999px;
+        background: \${config.primaryColor}; color: #ffffff;
+        border: 2px solid rgba(255,255,255,0.25); cursor: pointer;
+        display: flex; align-items: center; justify-content: center; gap: 10px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-weight: 800; font-size: 13px; letter-spacing: 0.1px;
+        animation: omniPulseRing 2.4s infinite;
+        transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), background 0.2s ease;
+      }
+      #omni-bubble-btn:hover { transform: translateY(-2px) scale(1.03); }
+      .omni-online-dot {
+        width: 10px; height: 10px; border-radius: 50%;
+        background: #34d399; border: 2px solid #ffffff; display: inline-block;
+      }
+      .omni-badge-count {
+        background: #ef4444; color: #fff; font-size: 10px; font-weight: 900;
+        padding: 2px 6px; border-radius: 999px; margin-left: 2px;
+      }
+      #omni-chat-modal {
+        display: none; position: fixed !important; \${modalPosCss} z-index: 2147483647 !important;
+        width: 380px; max-width: calc(100vw - 32px);
+        background: #ffffff; border-radius: 24px;
+        box-shadow: 0 24px 60px rgba(15,23,42,0.28);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        overflow: hidden; border: 1px solid #e2e8f0;
+        animation: omniSlideUp 0.22s ease-out;
+      }
+      .omni-head {
+        background: \${config.primaryColor}; color: #ffffff;
+        padding: 16px 20px; display: flex; justify-content: space-between; align-items: center;
+      }
+      .omni-content { padding: 16px 20px; max-height: 72vh; overflow-y: auto; text-align: left; }
+      .omni-field {
+        width: 100%; padding: 9px 12px; margin-bottom: 10px;
+        border: 1px solid #cbd5e1; border-radius: 10px; font-size: 12px; box-sizing: border-box;
+        color: #0f172a; background: #ffffff;
+      }
+      .omni-field:focus { outline: none; border-color: \${config.primaryColor}; }
+      .omni-channels { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+      .omni-ch-btn {
+        padding: 10px; border: 2px solid #e2e8f0; border-radius: 12px; background: #f8fafc;
+        cursor: pointer; font-weight: bold; font-size: 12px; text-align: center; color: #334155;
+      }
+      .omni-ch-btn.active { border-color: \${config.primaryColor}; background: #ecfdf5; color: #065f46; }
+      .omni-btn-send {
+        width: 100%; padding: 12px; background: \${config.primaryColor};
+        color: #ffffff; border: none; border-radius: 12px; font-weight: 800; cursor: pointer; font-size: 13px;
+      }
+    \`;
+    document.head.appendChild(style);
 
+    var currentChannel = 'chat';
+    var activeSessionId = '';
+    var renderedMsgIds = {};
+    var isModalOpen = false;
+
+    // Persistent Visitor ID for Real-Time Page & Online Visitor Counter
+    var visitorId = '';
     try {
-      var beaconImg = new Image();
-      beaconImg.src = config.apiOrigin + '/api/webhook/web-lead-beacon?d=' + encodeURIComponent(JSON.stringify({
-        sessionId: activeSessionId,
-        protocol: protocol,
+      visitorId = sessionStorage.getItem('omni_vis_id') || '';
+      if (!visitorId) {
+        visitorId = 'vis-js-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+        sessionStorage.setItem('omni_vis_id', visitorId);
+      }
+    } catch(e) {
+      visitorId = 'vis-js-' + Date.now().toString(36);
+    }
+
+    // Hidden Cross-Domain Real-Time Bridge Iframe
+    var bridgeFrame = document.createElement('iframe');
+    bridgeFrame.style.cssText = 'display:none;width:0;height:0;border:0;position:absolute;';
+    bridgeFrame.src = config.apiOrigin + '/?embed=bridge&tenant=' + encodeURIComponent(config.tenantSlug) + '&tenantId=' + encodeURIComponent(config.tenantId);
+    document.body.appendChild(bridgeFrame);
+
+    // Real-Time Visitor & Embedded Page Heartbeat Emitter
+    function sendVisitorHeartbeat(statusStr) {
+      var visitorPayload = {
+        visitorId: visitorId,
         tenantId: config.tenantId,
         tenantSlug: config.tenantSlug,
         companyName: config.companyName,
-        name: name,
-        phone: phone,
-        email: email,
-        department: dept,
-        message: msg,
-        originChannel: currentChannel
-      })) + '&_t=' + nowMs;
-    } catch(err) {}
+        pageUrl: window.location.href || ('https://' + config.tenantSlug + '.com.br/contato'),
+        pageTitle: document.title || ('Página Embedada — ' + config.companyName),
+        referrer: document.referrer || '',
+        embedType: 'Widget JS Flutuante',
+        isWidgetOpen: isModalOpen,
+        status: statusStr || 'online',
+        startedAt: Date.now(),
+        lastSeenAt: Date.now()
+      };
 
-    if (window.location.origin !== config.apiOrigin) {
+      fetch(config.apiOrigin + '/api/webhook/visitor-heartbeat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+        body: JSON.stringify(visitorPayload)
+      }).catch(function() {});
+
+      fetch('https://ntfy.sh/omnipulse_live_hub_2026_v4', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+        body: JSON.stringify({ type: 'OMNIPULSE_VISITOR_HEARTBEAT', visitor: visitorPayload })
+      }).catch(function() {});
+
       try {
-        var syncWin = window.open(
-          config.apiOrigin + '/?embed=sync&data=' + encodeURIComponent(JSON.stringify({ type: 'OMNIPULSE_EXTERNAL_SESSION', session: sessionObj })),
-          'omnipulse_sync_pulse',
-          'width=80,height=60,left=9999,top=9999,menubar=no,toolbar=no,location=no,status=no'
-        );
-        if (syncWin) {
-          setTimeout(function() { try { syncWin.close(); } catch(e) {} }, 450);
+        var vImg = new Image();
+        vImg.src = config.apiOrigin + '/api/webhook/visitor-beacon?d=' + encodeURIComponent(JSON.stringify(visitorPayload)) + '&_t=' + Date.now();
+      } catch(err) {}
+
+      try {
+        if (bridgeFrame && bridgeFrame.contentWindow) {
+          bridgeFrame.contentWindow.postMessage({ type: 'OMNIPULSE_VISITOR_HEARTBEAT', visitor: visitorPayload }, '*');
         }
       } catch(err) {}
     }
 
-    try {
-      if (typeof EventSource !== 'undefined') {
-        var es = new EventSource('https://ntfy.sh/omnipulse_live_hub_2026_v4/sse');
-        es.onmessage = function(ev) {
-          try {
-            var outer = JSON.parse(ev.data);
-            if (outer && outer.event === 'message' && outer.message) {
-              var inner = JSON.parse(outer.message);
-              if (inner && inner.type === 'OMNIPULSE_AGENT_REPLY' && inner.sessionId === activeSessionId && inner.message) {
-                appendBubble(inner.message.id, inner.message.sender, inner.message.senderName, inner.message.text);
-              }
-            }
-          } catch(e) {}
-        };
-      }
-    } catch(err) {}
+    sendVisitorHeartbeat('online');
+    setInterval(function() { sendVisitorHeartbeat('online'); }, 12000);
+    window.addEventListener('beforeunload', function() { sendVisitorHeartbeat('left'); });
 
-    fetch(config.webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
-      body: JSON.stringify({
+    window.addEventListener('message', function(ev) {
+      var d = ev.data;
+      if (d && d.type === 'OMNIPULSE_AGENT_REPLY' && d.sessionId === activeSessionId && d.message) {
+        appendBubble(d.message.id, d.message.sender, d.message.senderName, d.message.text);
+      }
+    });
+
+    root.innerHTML = \`
+      <button id="omni-bubble-btn" aria-label="Abrir atendimento">
+        <span class="omni-online-dot"></span>
+        <span id="omni-bubble-label">💬 Atendimento Online</span>
+        <span class="omni-badge-count" id="omni-bubble-badge">1</span>
+      </button>
+      <div id="omni-chat-modal">
+        <div class="omni-head" id="omni-modal-head">
+          <div>
+            <div style="font-weight:800;font-size:15px;">\${config.brandTitle}</div>
+            <div style="font-size:11px;opacity:0.9;">\${config.brandSubtitle}</div>
+          </div>
+          <button id="omni-close-x" style="background:none;border:none;color:#fff;font-size:22px;cursor:pointer;line-height:1;">&times;</button>
+        </div>
+        <div class="omni-content" id="omni-form-step">
+          <p style="font-size:12px;color:#475569;margin:0 0 10px 0;">\${config.greeting}</p>
+          <div class="omni-channels">
+            <button type="button" class="omni-ch-btn active" id="ch-chat">💬 Via Chat Online</button>
+            <button type="button" class="omni-ch-btn" id="ch-wa">📱 Via WhatsApp</button>
+          </div>
+          <form id="omni-lead-form">
+            <input class="omni-field" type="text" id="omni-name" required placeholder="Seu Nome Completo *" />
+            <input class="omni-field" type="tel" id="omni-phone" required placeholder="WhatsApp com DDD *" />
+            <input class="omni-field" type="email" id="omni-email" placeholder="Seu E-mail" />
+            <select class="omni-field" id="omni-dept">
+              \${config.departments.map(function(d) { return '<option value="' + d.name + '">' + d.name + '</option>'; }).join('')}
+            </select>
+            <textarea class="omni-field" id="omni-msg" rows="2" required placeholder="Como podemos ajudar? *"></textarea>
+            <button type="submit" class="omni-btn-send" id="omni-submit-btn">Iniciar Atendimento via Chat</button>
+          </form>
+        </div>
+        <div class="omni-content" id="omni-dialog-step" style="display:none;padding:0;">
+          <div id="omni-messages" style="height:280px;overflow-y:auto;padding:14px;background:#f1f5f9;display:flex;flex-direction:column;gap:8px;"></div>
+          <form id="omni-reply-form" style="display:flex;gap:6px;padding:10px;border-top:1px solid #e2e8f0;background:#fff;">
+            <input type="text" id="omni-reply-input" required placeholder="Digite sua mensagem..." style="flex:1;padding:8px 12px;border:1px solid #cbd5e1;border-radius:10px;font-size:12px;color:#0f172a;" />
+            <button type="submit" style="padding:8px 14px;background:\${config.primaryColor};color:#fff;border:none;border-radius:10px;font-weight:bold;cursor:pointer;">Enviar</button>
+          </form>
+        </div>
+      </div>
+    \`;
+
+    var bubbleBtn = document.getElementById('omni-bubble-btn');
+    var bubbleLabel = document.getElementById('omni-bubble-label');
+    var bubbleBadge = document.getElementById('omni-bubble-badge');
+    var chatModal = document.getElementById('omni-chat-modal');
+    var closeX = document.getElementById('omni-close-x');
+    var chChat = document.getElementById('ch-chat');
+    var chWa = document.getElementById('ch-wa');
+    var submitBtn = document.getElementById('omni-submit-btn');
+    var formStep = document.getElementById('omni-form-step');
+    var dialogStep = document.getElementById('omni-dialog-step');
+    var messagesBox = document.getElementById('omni-messages');
+
+    function setWidgetOpen(openState) {
+      isModalOpen = openState;
+      chatModal.style.display = openState ? 'block' : 'none';
+      bubbleLabel.innerText = openState ? '✕ Fechar Atendimento' : '💬 Atendimento Online';
+      if (openState && bubbleBadge) {
+        bubbleBadge.style.display = 'none';
+      }
+      sendVisitorHeartbeat('online');
+    }
+
+    chChat.onclick = function() {
+      currentChannel = 'chat';
+      chChat.className = 'omni-ch-btn active';
+      chWa.className = 'omni-ch-btn';
+      submitBtn.innerText = 'Iniciar Atendimento via Chat';
+    };
+    chWa.onclick = function() {
+      currentChannel = 'whatsapp';
+      chWa.className = 'omni-ch-btn active';
+      chChat.className = 'omni-ch-btn';
+      submitBtn.innerText = 'Iniciar Diálogo via WhatsApp';
+    };
+    bubbleBtn.onclick = function() { setWidgetOpen(!isModalOpen); };
+    closeX.onclick = function() { setWidgetOpen(false); };
+
+    if (config.autoOpen) {
+      setTimeout(function() { setWidgetOpen(true); }, 600);
+    }
+
+    function appendBubble(id, sender, senderName, text) {
+      if (id && renderedMsgIds[id]) return;
+      if (id) renderedMsgIds[id] = true;
+      var div = document.createElement('div');
+      var isMe = sender === 'client' || sender === 'contact';
+      div.style.cssText = 'align-self:' + (isMe ? 'flex-end' : 'flex-start') + ';max-width:82%;padding:8px 12px;border-radius:14px;font-size:12px;background:' + (isMe ? (currentChannel === 'whatsapp' ? '#dcf8c6' : '#2563eb') : '#ffffff') + ';color:' + (isMe && currentChannel !== 'whatsapp' ? '#ffffff' : '#0f172a') + ';box-shadow:0 1px 2px rgba(0,0,0,0.08);';
+      var headerHtml = !isMe && senderName ? '<div style="font-size:10px;font-weight:700;color:#059669;margin-bottom:2px;">' + senderName + '</div>' : '';
+      div.innerHTML = headerHtml + '<div>' + String(text).replace(/</g, '&lt;') + '</div>';
+      messagesBox.appendChild(div);
+      messagesBox.scrollTop = messagesBox.scrollHeight;
+    }
+
+    function pollRemoteMessages() {
+      if (!activeSessionId) return;
+      fetch(config.apiOrigin + '/api/webhook/web-chat/' + encodeURIComponent(activeSessionId) + '/messages')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data && Array.isArray(data.messages)) {
+            data.messages.forEach(function(m) {
+              appendBubble(m.id, m.sender, m.senderName, m.text);
+            });
+          }
+        })
+        .catch(function() {});
+    }
+
+    document.getElementById('omni-lead-form').onsubmit = function(e) {
+      e.preventDefault();
+      var name = document.getElementById('omni-name').value;
+      var phone = document.getElementById('omni-phone').value;
+      var email = document.getElementById('omni-email').value;
+      var dept = document.getElementById('omni-dept').value;
+      var msg = document.getElementById('omni-msg').value;
+
+      formStep.style.display = 'none';
+      dialogStep.style.display = 'block';
+      if (currentChannel === 'whatsapp') {
+        messagesBox.style.background = '#e5ddd5';
+      }
+
+      var nowMs = Date.now();
+      var dNow = new Date();
+      var timeStr = ('0' + dNow.getHours()).slice(-2) + ':' + ('0' + dNow.getMinutes()).slice(-2);
+      activeSessionId = 'ext-' + nowMs + '-' + Math.random().toString(36).slice(2, 6);
+      var protocol = (currentChannel === 'chat' ? 'OP-CHAT-' : 'OP-WA-') + String(nowMs).slice(-4);
+      var welcomeText = 'Olá ' + name + '! Recebemos sua mensagem via ' + (currentChannel === 'whatsapp' ? 'WhatsApp' : 'Chat Online') + ' para ' + config.companyName + ' no setor ' + dept + '. Um atendente já foi acionado e responderá aqui mesmo!';
+
+      var initMsgs = [
+        { id: 'm-ext-init-' + nowMs, sender: 'contact', senderName: name, text: msg, timestamp: timeStr, createdAt: nowMs },
+        { id: 'm-ext-welcome-' + (nowMs + 1), sender: 'agent', senderName: 'Atendimento ' + config.companyName, text: welcomeText, timestamp: timeStr, createdAt: nowMs + 1 }
+      ];
+
+      initMsgs.forEach(function(m) {
+        appendBubble(m.id, m.sender, m.senderName, m.text);
+      });
+
+      var sessionObj = {
         sessionId: activeSessionId,
         protocol: protocol,
         tenantId: config.tenantId,
@@ -367,73 +399,158 @@ export const WebGadgetView: React.FC = () => {
         phone: phone,
         email: email,
         department: dept,
-        message: msg,
-        originChannel: currentChannel
-      })
-    })
-    .then(function(r) { return r.json(); })
-    .then(function() {
-      setInterval(pollRemoteMessages, 1500);
-    })
-    .catch(function() {
-      setInterval(pollRemoteMessages, 1500);
-    });
-  };
-
-  document.getElementById('omni-reply-form').onsubmit = function(e) {
-    e.preventDefault();
-    var inp = document.getElementById('omni-reply-input');
-    var text = inp.value.trim();
-    if (!text) return;
-    inp.value = '';
-    var nowMs = Date.now();
-    var dNow = new Date();
-    var timeStr = ('0' + dNow.getHours()).slice(-2) + ':' + ('0' + dNow.getMinutes()).slice(-2);
-    var msgObj = {
-      id: 'm-ext-' + nowMs + '-' + Math.random().toString(36).slice(2, 6),
-      sender: 'contact',
-      senderName: document.getElementById('omni-name').value || 'Cliente',
-      text: text,
-      timestamp: timeStr,
-      createdAt: nowMs
-    };
-    appendBubble(msgObj.id, 'contact', msgObj.senderName, msgObj.text);
-
-    if (!activeSessionId) return;
-
-    fetch('https://ntfy.sh/omnipulse_live_hub_2026_v4', {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
-      body: JSON.stringify({
-        type: 'OMNIPULSE_CUSTOMER_MESSAGE',
-        sessionId: activeSessionId,
         originChannel: currentChannel,
-        message: msgObj
-      })
-    }).catch(function() {});
+        createdAt: nowMs,
+        updatedAt: nowMs,
+        messages: initMsgs
+      };
 
-    try {
-      if (bridgeFrame && bridgeFrame.contentWindow) {
-        bridgeFrame.contentWindow.postMessage({
+      fetch('https://ntfy.sh/omnipulse_live_hub_2026_v4', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+        body: JSON.stringify({ type: 'OMNIPULSE_EXTERNAL_SESSION', session: sessionObj })
+      }).catch(function() {});
+
+      try {
+        if (bridgeFrame && bridgeFrame.contentWindow) {
+          bridgeFrame.contentWindow.postMessage({ type: 'OMNIPULSE_EXTERNAL_SESSION', session: sessionObj }, '*');
+        }
+      } catch(err) {}
+
+      try {
+        var beaconImg = new Image();
+        beaconImg.src = config.apiOrigin + '/api/webhook/web-lead-beacon?d=' + encodeURIComponent(JSON.stringify({
+          sessionId: activeSessionId,
+          protocol: protocol,
+          tenantId: config.tenantId,
+          tenantSlug: config.tenantSlug,
+          companyName: config.companyName,
+          name: name,
+          phone: phone,
+          email: email,
+          department: dept,
+          message: msg,
+          originChannel: currentChannel
+        })) + '&_t=' + nowMs;
+      } catch(err) {}
+
+      if (window.location.origin !== config.apiOrigin) {
+        try {
+          var syncWin = window.open(
+            config.apiOrigin + '/?embed=sync&data=' + encodeURIComponent(JSON.stringify({ type: 'OMNIPULSE_EXTERNAL_SESSION', session: sessionObj })),
+            'omnipulse_sync_pulse',
+            'width=80,height=60,left=9999,top=9999,menubar=no,toolbar=no,location=no,status=no'
+          );
+          if (syncWin) {
+            setTimeout(function() { try { syncWin.close(); } catch(e) {} }, 450);
+          }
+        } catch(err) {}
+      }
+
+      try {
+        if (typeof EventSource !== 'undefined') {
+          var es = new EventSource('https://ntfy.sh/omnipulse_live_hub_2026_v4/sse');
+          es.onmessage = function(ev) {
+            try {
+              var outer = JSON.parse(ev.data);
+              if (outer && outer.event === 'message' && outer.message) {
+                var inner = JSON.parse(outer.message);
+                if (inner && inner.type === 'OMNIPULSE_AGENT_REPLY' && inner.sessionId === activeSessionId && inner.message) {
+                  appendBubble(inner.message.id, inner.message.sender, inner.message.senderName, inner.message.text);
+                }
+              }
+            } catch(e) {}
+          };
+        }
+      } catch(err) {}
+
+      fetch(config.webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+        body: JSON.stringify({
+          sessionId: activeSessionId,
+          protocol: protocol,
+          tenantId: config.tenantId,
+          tenantSlug: config.tenantSlug,
+          companyName: config.companyName,
+          name: name,
+          phone: phone,
+          email: email,
+          department: dept,
+          message: msg,
+          originChannel: currentChannel
+        })
+      })
+      .then(function(r) { return r.json(); })
+      .then(function() {
+        setInterval(pollRemoteMessages, 1500);
+      })
+      .catch(function() {
+        setInterval(pollRemoteMessages, 1500);
+      });
+    };
+
+    document.getElementById('omni-reply-form').onsubmit = function(e) {
+      e.preventDefault();
+      var inp = document.getElementById('omni-reply-input');
+      var text = inp.value.trim();
+      if (!text) return;
+      inp.value = '';
+      var nowMs = Date.now();
+      var dNow = new Date();
+      var timeStr = ('0' + dNow.getHours()).slice(-2) + ':' + ('0' + dNow.getMinutes()).slice(-2);
+      var msgObj = {
+        id: 'm-ext-' + nowMs + '-' + Math.random().toString(36).slice(2, 6),
+        sender: 'contact',
+        senderName: document.getElementById('omni-name').value || 'Cliente',
+        text: text,
+        timestamp: timeStr,
+        createdAt: nowMs
+      };
+      appendBubble(msgObj.id, 'contact', msgObj.senderName, msgObj.text);
+
+      if (!activeSessionId) return;
+
+      fetch('https://ntfy.sh/omnipulse_live_hub_2026_v4', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+        body: JSON.stringify({
           type: 'OMNIPULSE_CUSTOMER_MESSAGE',
           sessionId: activeSessionId,
+          originChannel: currentChannel,
           message: msgObj
-        }, '*');
-      }
-    } catch(err) {}
+        })
+      }).catch(function() {});
 
-    fetch(config.apiOrigin + '/api/webhook/web-chat/' + encodeURIComponent(activeSessionId) + '/message', {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
-      body: JSON.stringify({ id: msgObj.id, sender: 'contact', senderName: msgObj.senderName, text: text })
-    }).catch(function() {});
-  };
+      try {
+        if (bridgeFrame && bridgeFrame.contentWindow) {
+          bridgeFrame.contentWindow.postMessage({
+            type: 'OMNIPULSE_CUSTOMER_MESSAGE',
+            sessionId: activeSessionId,
+            message: msgObj
+          }, '*');
+        }
+      } catch(err) {}
+
+      fetch(config.apiOrigin + '/api/webhook/web-chat/' + encodeURIComponent(activeSessionId) + '/message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+        body: JSON.stringify({ id: msgObj.id, sender: 'contact', senderName: msgObj.senderName, text: text })
+      }).catch(function() {});
+    };
+  }
+
+  if (document.body) {
+    mountOmniPulseWidget();
+  } else {
+    window.addEventListener('DOMContentLoaded', mountOmniPulseWidget);
+  }
 })();
 </script>`;
 
   const htmlFormCode = `<!-- ============================================== -->
 <!-- FORMULÁRIO HTML PURO EXCLUSIVO DA EMPRESA: ${(currentTenant?.name || 'EMPRESA').toUpperCase()} -->
-<!-- Funciona em qualquer página externa (HTML local, WordPress, Elementor, Vercel) -->
+<!-- Inclui Contador de Visitas Online em Tempo Real da Página -->
 <!-- ============================================== -->
 <form action="${appOrigin}/" method="GET" target="_blank" class="omnipulse-clean-form" style="max-width: 480px; padding: 24px; border-radius: 16px; border: 1px solid #e2e8f0; font-family: sans-serif; background: #fff; box-shadow: 0 10px 30px rgba(0,0,0,0.06);">
   <input type="hidden" name="embed" value="widget" />
@@ -474,7 +591,29 @@ ${departments.map((d) => `    <option value="${d.name}">${d.name}</option>`).joi
   <button type="submit" style="width: 100%; padding: 12px; background-color: ${webGadgetConfig.primaryColor || '#10B981'}; color: #fff; border: none; border-radius: 10px; font-weight: bold; cursor: pointer; font-size: 14px;">
     Iniciar Atendimento Agora
   </button>
-</form>`;
+</form>
+<script>
+(function(){
+  var vId = 'vis-html-' + Math.random().toString(36).slice(2, 8);
+  function pingHtmlVisitor() {
+    var p = {
+      visitorId: vId,
+      tenantId: "${currentTenant?.id || ''}",
+      tenantSlug: "${currentTenant?.slug || ''}",
+      companyName: "${currentTenant?.name || ''}",
+      pageUrl: window.location.href || "https://${currentTenant?.slug || 'empresa'}.com.br/formulario-html",
+      pageTitle: document.title || "Página com Formulário HTML Puro (${currentTenant?.name || ''})",
+      embedType: "Formulário HTML Puro",
+      status: "online"
+    };
+    fetch("https://ntfy.sh/omnipulse_live_hub_2026_v4", { method: "POST", headers: { "Content-Type": "text/plain;charset=UTF-8" }, body: JSON.stringify({ type: "OMNIPULSE_VISITOR_HEARTBEAT", visitor: p }) }).catch(function(){});
+    var img = new Image();
+    img.src = "${appOrigin}/api/webhook/visitor-beacon?d=" + encodeURIComponent(JSON.stringify(p)) + "&_t=" + Date.now();
+  }
+  pingHtmlVisitor();
+  setInterval(pingHtmlVisitor, 15000);
+})();
+</script>`;
 
   const iframeCode = `<!-- ============================================== -->
 <!-- WIDGET IFRAME EXCLUSIVO DA EMPRESA: ${(currentTenant?.name || 'EMPRESA').toUpperCase()} -->
@@ -571,6 +710,97 @@ ${departments.map((d) => `    <option value="${d.name}">${d.name}</option>`).joi
           <Eye className="w-4 h-4" />
           Abrir Widget Flutuante Ao Vivo
         </button>
+      </div>
+
+      {/* Real-Time Online Visitors & Embedded Pages Counter Banner */}
+      <div className="bg-slate-950 text-white rounded-3xl p-5 border border-slate-800 shadow-lg space-y-4">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-3 border-b border-slate-800">
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 flex items-center justify-center shrink-0">
+              <Globe className="w-6 h-6 animate-pulse" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-sm font-extrabold text-white">
+                  Contador em Tempo Real: Visitantes Online & Páginas com Formulário Embedado
+                </h2>
+                <span className="text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                  Monitoramento Ao Vivo ({currentTenant?.name})
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                Acompanhe quantos usuários estão visitando agora as páginas externas que contêm o código do formulário de contato desta empresa.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="px-3.5 py-2 bg-slate-900 border border-slate-800 rounded-2xl text-center">
+              <span className="text-[10px] uppercase font-bold text-slate-400 block">
+                Usuários Online Agora
+              </span>
+              <span className="text-xl font-black text-emerald-400 font-mono">
+                {totalOnlineVisitorsCount}
+              </span>
+            </div>
+            <div className="px-3.5 py-2 bg-slate-900 border border-slate-800 rounded-2xl text-center">
+              <span className="text-[10px] uppercase font-bold text-slate-400 block">
+                Total de Visitas nas Páginas
+              </span>
+              <span className="text-xl font-black text-blue-400 font-mono">
+                {totalEmbeddedPageVisitsCount}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => simulateExternalPageVisit()}
+              className="px-3.5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl text-xs font-bold transition-colors cursor-pointer shadow-sm"
+              title="Simular novo visitante abrindo uma página externa com o código embedado"
+            >
+              + Simular Visita Online
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 text-xs">
+          {embeddedPageVisits.map((page) => (
+            <div
+              key={page.pageUrl}
+              className="p-3.5 bg-slate-900/90 border border-slate-800 rounded-2xl flex flex-col justify-between gap-2"
+            >
+              <div>
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                    {page.embedType}
+                  </span>
+                  <span className="text-[10px] font-mono text-slate-400">
+                    Último acesso: {page.lastVisitTime}
+                  </span>
+                </div>
+                <div className="font-bold text-white text-xs truncate" title={page.pageTitle}>
+                  {page.pageTitle}
+                </div>
+                <div
+                  className="text-[11px] font-mono text-emerald-400 truncate mt-0.5"
+                  title={page.pageUrl}
+                >
+                  {page.pageUrl}
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px]">
+                <span className="flex items-center gap-1.5 font-bold text-emerald-300">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  {page.onlineNow} {page.onlineNow === 1 ? 'usuário online' : 'usuários online'}
+                </span>
+                <span className="font-mono font-bold text-slate-300 bg-slate-800 px-2 py-0.5 rounded-lg">
+                  {page.totalVisits} visitas
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">

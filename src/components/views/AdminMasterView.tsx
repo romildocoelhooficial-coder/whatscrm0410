@@ -30,6 +30,9 @@ import {
   Award,
   Check,
   Phone,
+  Globe,
+  Users,
+  ExternalLink,
 } from 'lucide-react';
 import { useCRM } from '../../context/CRMContext';
 import { Agent, Department } from '../../types/crm';
@@ -55,10 +58,16 @@ export const AdminMasterView: React.FC = () => {
     setIsLoginModalOpen,
     setIsQrModalOpen,
     openQrCodeForActivation,
+    whatsappConnectionState,
     setActiveView,
     currentTenant,
     updateTenant,
     updateCurrentTenantCredentials,
+    liveVisitors,
+    embeddedPageVisits,
+    totalOnlineVisitorsCount,
+    totalEmbeddedPageVisitsCount,
+    simulateExternalPageVisit,
   } = useCRM();
 
   const [agentFilterSearch, setAgentFilterSearch] = useState('');
@@ -303,6 +312,28 @@ export const AdminMasterView: React.FC = () => {
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
               Latência Média: <strong>21ms</strong>
             </span>
+            <span>•</span>
+            <button
+              type="button"
+              onClick={() => openQrCodeForActivation()}
+              className={`flex items-center gap-1.5 px-2.5 py-0.5 rounded-full font-bold text-[10px] uppercase transition-all cursor-pointer ${
+                currentTenant?.whatsappStatus === 'open' || whatsappConnectionState === 'open'
+                  ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                  : 'bg-amber-100 text-amber-800 hover:bg-amber-200 animate-pulse'
+              }`}
+              title="Clique para abrir e gerenciar o QR Code e a conexão do WhatsApp"
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  currentTenant?.whatsappStatus === 'open' || whatsappConnectionState === 'open'
+                    ? 'bg-emerald-600'
+                    : 'bg-amber-600'
+                }`}
+              />
+              {currentTenant?.whatsappStatus === 'open' || whatsappConnectionState === 'open'
+                ? 'WhatsApp Conectado (Online)'
+                : '📱 Conectar WhatsApp (QR Code)'}
+            </button>
           </div>
           </div>
         </div>
@@ -320,11 +351,17 @@ export const AdminMasterView: React.FC = () => {
 
           <button
             onClick={() => openQrCodeForActivation()}
-            className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-sm transition-all animate-pulse"
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold shadow-sm transition-all cursor-pointer ${
+              currentTenant?.whatsappStatus === 'open' || whatsappConnectionState === 'open'
+                ? 'bg-emerald-50 text-emerald-800 border border-emerald-300 hover:bg-emerald-100'
+                : 'bg-emerald-600 hover:bg-emerald-700 text-white animate-pulse'
+            }`}
             title="Abrir o QR Code para ativar ou reconectar o WhatsApp desta empresa"
           >
             <QrCode className="w-4 h-4" />
-            Ativar WhatsApp (QR Code)
+            {currentTenant?.whatsappStatus === 'open' || whatsappConnectionState === 'open'
+              ? 'WhatsApp Conectado'
+              : 'Ativar WhatsApp (QR Code)'}
           </button>
 
           <button
@@ -366,6 +403,126 @@ export const AdminMasterView: React.FC = () => {
             <Download className="w-3.5 h-3.5 text-slate-500" />
             Exportar
           </button>
+        </div>
+      </div>
+
+      {/* Contador em Tempo Real: Visitantes Online & Páginas que Contêm o Código do Formulário de Contato */}
+      <div className="bg-slate-950 text-white rounded-3xl p-5 border border-slate-800 shadow-lg space-y-4">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-3.5 border-b border-slate-800">
+          <div className="flex items-start gap-3.5">
+            <div className="w-11 h-11 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 flex items-center justify-center shrink-0 mt-0.5">
+              <Globe className="w-6 h-6 animate-pulse" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-sm font-extrabold text-white">
+                  Contador em Tempo Real — Usuários Visitando & Páginas com Formulário Embedado
+                </h2>
+                <span className="text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                  Online em Tempo Real
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Veja quantos usuários estão visitando agora as páginas externas de <strong>{currentTenant?.name}</strong> que contêm o código do formulário de contato e o número total de visitas por página.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <div className="px-4 py-2 bg-slate-900 border border-emerald-500/40 rounded-2xl flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
+                <Users className="w-4 h-4" />
+              </div>
+              <div>
+                <span className="text-[10px] uppercase font-bold text-slate-400 block leading-none">
+                  Visitantes Online Agora
+                </span>
+                <span className="text-lg font-black text-emerald-400 font-mono">
+                  {totalOnlineVisitorsCount} {totalOnlineVisitorsCount === 1 ? 'usuário' : 'usuários'}
+                </span>
+              </div>
+            </div>
+
+            <div className="px-4 py-2 bg-slate-900 border border-slate-800 rounded-2xl flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-blue-500/20 text-blue-400 flex items-center justify-center">
+                <Activity className="w-4 h-4" />
+              </div>
+              <div>
+                <span className="text-[10px] uppercase font-bold text-slate-400 block leading-none">
+                  Total de Visitas
+                </span>
+                <span className="text-lg font-black text-blue-400 font-mono">
+                  {totalEmbeddedPageVisitsCount} visitas
+                </span>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => simulateExternalPageVisit()}
+              className="px-3.5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl text-xs font-bold transition-colors cursor-pointer shadow-sm flex items-center gap-1.5"
+              title="Simular novo visitante abrindo uma página com o formulário embedado"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Simular Visita na Página
+            </button>
+          </div>
+        </div>
+
+        {/* Lista de Páginas Monitoradas com o Código do Formulário */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs text-left">
+            <thead className="bg-slate-900/90 text-slate-400 uppercase text-[10px] font-bold border-b border-slate-800">
+              <tr>
+                <th className="py-2.5 px-3 rounded-tl-xl">Página (com Código do Formulário Embedado)</th>
+                <th className="py-2.5 px-3">URL da Página</th>
+                <th className="py-2.5 px-3">Tipo do Código</th>
+                <th className="py-2.5 px-3 text-center">Usuários Online Agora</th>
+                <th className="py-2.5 px-3 text-center">Total de Visitas</th>
+                <th className="py-2.5 px-3 text-right rounded-tr-xl">Último Acesso</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/80">
+              {embeddedPageVisits.map((page) => (
+                <tr key={page.pageUrl} className="hover:bg-slate-900/60 transition-colors">
+                  <td className="py-3 px-3 font-bold text-white">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+                      <span className="truncate max-w-[260px]" title={page.pageTitle}>
+                        {page.pageTitle}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="py-3 px-3 font-mono text-[11px] text-emerald-400">
+                    <div className="flex items-center gap-1.5 truncate max-w-[280px]" title={page.pageUrl}>
+                      <span className="truncate">{page.pageUrl}</span>
+                      <ExternalLink className="w-3 h-3 text-slate-500 shrink-0" />
+                    </div>
+                  </td>
+                  <td className="py-3 px-3">
+                    <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-200 border border-slate-700">
+                      {page.embedType}
+                    </span>
+                  </td>
+                  <td className="py-3 px-3 text-center">
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-mono font-bold text-[11px]">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                      {page.onlineNow} online
+                    </span>
+                  </td>
+                  <td className="py-3 px-3 text-center">
+                    <span className="px-2.5 py-0.5 rounded-lg bg-blue-500/20 text-blue-300 border border-blue-500/30 font-mono font-extrabold text-xs">
+                      {page.totalVisits} visitas
+                    </span>
+                  </td>
+                  <td className="py-3 px-3 text-right font-mono text-[11px] text-slate-400">
+                    {page.lastVisitTime}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 

@@ -386,8 +386,76 @@ export const ExternalWidgetEmbedView: React.FC<{
             }),
           }
         ).catch(() => {});
+      } else if (data.type === 'OMNIPULSE_VISITOR_HEARTBEAT' && data.visitor) {
+        try {
+          bc?.postMessage({
+            type: 'OMNIPULSE_VISITOR_HEARTBEAT',
+            visitor: data.visitor,
+          });
+        } catch {
+          // ignore
+        }
+        publishToRealtimeCloudRelay(
+          { type: 'OMNIPULSE_VISITOR_HEARTBEAT', visitor: data.visitor },
+          data.visitor.tenantSlug
+        );
+        fetch('/api/webhook/visitor-heartbeat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+          body: JSON.stringify(data.visitor),
+        }).catch(() => {});
       }
     };
+
+    // If mode === 'widget' (Iframe Embed), automatically emit live visitor heartbeat for the host page
+    if (mode === 'widget') {
+      const visId = `vis-iframe-${Math.random().toString(36).slice(2, 9)}`;
+      const hostPageUrl =
+        params.get('pageUrl') ||
+        (typeof document !== 'undefined' && document.referrer
+          ? document.referrer
+          : `https://${tenantSlug || 'site-externo'}.com.br/contato-iframe`);
+      const hostPageTitle =
+        params.get('pageTitle') ||
+        `Página com Iframe Embedado (${companyName || tenantSlug || 'Empresa'})`;
+
+      const sendIframeHeartbeat = (status: 'online' | 'left' = 'online') => {
+        const visitorPayload = {
+          visitorId: visId,
+          tenantId,
+          tenantSlug,
+          companyName,
+          pageUrl: hostPageUrl,
+          pageTitle: hostPageTitle,
+          embedType: 'Iframe Embed' as const,
+          isWidgetOpen: true,
+          startedAt: Date.now(),
+          lastSeenAt: Date.now(),
+          status,
+        };
+        try {
+          bc?.postMessage({
+            type: 'OMNIPULSE_VISITOR_HEARTBEAT',
+            visitor: visitorPayload,
+          });
+        } catch {
+          // ignore
+        }
+        publishToRealtimeCloudRelay(
+          { type: 'OMNIPULSE_VISITOR_HEARTBEAT', visitor: visitorPayload },
+          tenantSlug
+        );
+        fetch('/api/webhook/visitor-heartbeat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+          body: JSON.stringify(visitorPayload),
+        }).catch(() => {});
+      };
+
+      sendIframeHeartbeat('online');
+      setInterval(() => sendIframeHeartbeat('online'), 12000);
+      window.addEventListener('beforeunload', () => sendIframeHeartbeat('left'));
+    }
 
     const handleIncomingAgentReply = (sessionId: string, message: ExternalRealtimeMessage) => {
       if (!sessionId || !message) return;

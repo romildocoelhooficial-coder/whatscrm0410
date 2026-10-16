@@ -448,15 +448,26 @@ export const SuperAdminView: React.FC = () => {
                             <Check className="w-2.5 h-2.5" /> Salvo!
                           </span>
                         )}
-                        <span
-                          className={`text-[9px] font-bold px-1.5 py-0.2 rounded-full uppercase ${
+                        <button
+                          type="button"
+                          onClick={() => {
+                            switchTenant(t.id);
+                            openQrCodeForActivation();
+                          }}
+                          className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase flex items-center gap-1 transition-all cursor-pointer ${
                             t.whatsappStatus === 'open'
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-amber-100 text-amber-800'
+                              ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                              : 'bg-amber-100 text-amber-800 hover:bg-amber-200 animate-pulse'
                           }`}
+                          title="Clique para abrir e conectar o QR Code de WhatsApp desta empresa"
                         >
-                          {t.whatsappStatus === 'open' ? 'Online' : 'Aguardando QR'}
-                        </span>
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full ${
+                              t.whatsappStatus === 'open' ? 'bg-emerald-600' : 'bg-amber-600'
+                            }`}
+                          />
+                          {t.whatsappStatus === 'open' ? 'Online' : '📱 Ativar QR'}
+                        </button>
                       </div>
                     </div>
 

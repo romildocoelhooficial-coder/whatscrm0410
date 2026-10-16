@@ -14,6 +14,8 @@ import {
   WebGadgetConfig,
   TenantSystem,
   UserRole,
+  LivePageVisitor,
+  PageVisitSummary,
 } from '../types/crm';
 import {
   initialDepartments,
@@ -114,10 +116,19 @@ interface CRMContextType {
   // QR Code Activation
   openQrCodeForActivation: () => void;
 
-  // Web Gadget Embed
+  // Web Gadget Embed & Real-Time Visitor Counter
   updateWebGadgetConfig: (updates: Partial<WebGadgetConfig>) => void;
   isGadgetFloatingOpen: boolean;
   setIsGadgetFloatingOpen: (open: boolean) => void;
+  liveVisitors: LivePageVisitor[];
+  embeddedPageVisits: PageVisitSummary[];
+  totalOnlineVisitorsCount: number;
+  totalEmbeddedPageVisitsCount: number;
+  simulateExternalPageVisit: (
+    customPageUrl?: string,
+    customPageTitle?: string,
+    embedType?: 'Widget JS Flutuante' | 'Formulário HTML Puro' | 'Iframe Embed'
+  ) => void;
   startChatFromGadget: (data: {
     name: string;
     email: string;
@@ -525,7 +536,7 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const currentTenant = tenants.find((t) => t.id === currentTenantId) || tenants[0];
 
-  // Sync gatewayConfig phone & engine whenever currentTenant changes
+  // Sync gatewayConfig phone, engine & whatsappConnectionState whenever currentTenant changes
   useEffect(() => {
     if (currentTenant) {
       setGatewayConfig((prev) => ({
@@ -533,8 +544,16 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         primaryPhoneNumber: currentTenant.primaryPhoneNumber,
         activeEngine: currentTenant.whatsappEngine || prev.activeEngine,
       }));
+      setWhatsappConnectionState(
+        currentTenant.whatsappStatus === 'open' ? 'open' : 'qrcode'
+      );
     }
-  }, [currentTenantId, currentTenant?.primaryPhoneNumber, currentTenant?.whatsappEngine]);
+  }, [
+    currentTenantId,
+    currentTenant?.primaryPhoneNumber,
+    currentTenant?.whatsappEngine,
+    currentTenant?.whatsappStatus,
+  ]);
 
   // Scoped agents belonging exclusively to the current company (tenant)
   const tenantAgents = agents.filter(
@@ -610,6 +629,267 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     return t.tenantId === currentTenantId;
   });
+
+  // Real-time Visitors & Embedded Pages Tracking State
+  const [allVisitors, setAllVisitors] = useState<Record<string, LivePageVisitor>>(() => {
+    const now = Date.now();
+    return {
+      'vis-seed-omnipulse-1': {
+        visitorId: 'vis-seed-omnipulse-1',
+        tenantId: 'tenant-omnipulse',
+        tenantSlug: 'omnipulse-sp',
+        companyName: 'OmniPulse Matriz (SP)',
+        pageUrl: 'https://omnipulse.io/planos-enterprise',
+        pageTitle: 'Planos & Preços Enterprise — OmniPulse',
+        embedType: 'Widget JS Flutuante',
+        isWidgetOpen: true,
+        startedAt: now - 42000,
+        lastSeenAt: now,
+        status: 'online',
+      },
+      'vis-seed-omnipulse-2': {
+        visitorId: 'vis-seed-omnipulse-2',
+        tenantId: 'tenant-omnipulse',
+        tenantSlug: 'omnipulse-sp',
+        companyName: 'OmniPulse Matriz (SP)',
+        pageUrl: 'https://omnipulse.io/fale-conosco',
+        pageTitle: 'Fale Conosco & Atendimento — OmniPulse',
+        embedType: 'Formulário HTML Puro',
+        isWidgetOpen: false,
+        startedAt: now - 18000,
+        lastSeenAt: now,
+        status: 'online',
+      },
+      'vis-seed-logsul-1': {
+        visitorId: 'vis-seed-logsul-1',
+        tenantId: 'tenant-logistica-sul',
+        tenantSlug: 'logsul-transportes',
+        companyName: 'LogSul Transportes S.A.',
+        pageUrl: 'https://logsul.com.br/cotacao-frete',
+        pageTitle: 'Cotação Rápida de Frete & Rastreio — LogSul Transportes',
+        embedType: 'Widget JS Flutuante',
+        isWidgetOpen: true,
+        startedAt: now - 25000,
+        lastSeenAt: now,
+        status: 'online',
+      },
+      'vis-seed-logsul-2': {
+        visitorId: 'vis-seed-logsul-2',
+        tenantId: 'tenant-logistica-sul',
+        tenantSlug: 'logsul-transportes',
+        companyName: 'LogSul Transportes S.A.',
+        pageUrl: 'https://logsul.com.br/atendimento-whatsapp',
+        pageTitle: 'Central de Atendimento ao Embarcador — LogSul',
+        embedType: 'Iframe Embed',
+        isWidgetOpen: true,
+        startedAt: now - 12000,
+        lastSeenAt: now,
+        status: 'online',
+      },
+      'vis-seed-saude-1': {
+        visitorId: 'vis-seed-saude-1',
+        tenantId: 'tenant-clinica-saude',
+        tenantSlug: 'clinica-saude-mais',
+        companyName: 'Clínica Saúde Mais (RJ)',
+        pageUrl: 'https://clinicasaudemais.com.br/agendar-consulta',
+        pageTitle: 'Agendamento Online de Consultas & Exames — Saúde Mais',
+        embedType: 'Widget JS Flutuante',
+        isWidgetOpen: true,
+        startedAt: now - 30000,
+        lastSeenAt: now,
+        status: 'online',
+      },
+    };
+  });
+
+  const [pageVisitCounters, setPageVisitCounters] = useState<Record<string, number>>(() => {
+    try {
+      const saved = localStorage.getItem('omnipulse_page_visit_counters');
+      if (saved) return JSON.parse(saved);
+    } catch {
+      // ignore
+    }
+    return {
+      'tenant-omnipulse::https://omnipulse.io/planos-enterprise': 24,
+      'tenant-omnipulse::https://omnipulse.io/fale-conosco': 17,
+      'tenant-logistica-sul::https://logsul.com.br/cotacao-frete': 31,
+      'tenant-logistica-sul::https://logsul.com.br/atendimento-whatsapp': 19,
+      'tenant-clinica-saude::https://clinicasaudemais.com.br/agendar-consulta': 28,
+    };
+  });
+
+  const registerIncomingVisitorHeartbeat = (visitorData: any) => {
+    if (!visitorData || typeof visitorData !== 'object') return;
+    const vId = String(visitorData.visitorId || `vis-${Date.now()}`).trim();
+    const pageUrl = String(
+      visitorData.pageUrl || `https://${currentTenant?.slug || 'empresa'}.com.br/contato`
+    ).trim();
+    const pageTitle = String(
+      visitorData.pageTitle || `Página com Formulário (${currentTenant?.name || 'Empresa'})`
+    ).trim();
+
+    const matchedT =
+      tenants.find(
+        (t) =>
+          (visitorData.tenantId && t.id === visitorData.tenantId) ||
+          (visitorData.tenantSlug && t.slug === visitorData.tenantSlug) ||
+          (visitorData.companyName &&
+            t.name.toLowerCase().includes(String(visitorData.companyName).toLowerCase()))
+      ) || currentTenant;
+
+    const effectiveTId = matchedT?.id || currentTenantId;
+    const effectiveTSlug = matchedT?.slug || currentTenant?.slug || 'empresa';
+    const effectiveCompany = matchedT?.name || currentTenant?.name || 'Empresa';
+    const embedType: 'Widget JS Flutuante' | 'Formulário HTML Puro' | 'Iframe Embed' =
+      visitorData.embedType === 'Formulário HTML Puro' ||
+      visitorData.embedType === 'Iframe Embed'
+        ? visitorData.embedType
+        : 'Widget JS Flutuante';
+    const nowMs = Date.now();
+
+    setAllVisitors((prev) => {
+      const existing = prev[vId];
+      const isNewPageVisit = !existing || existing.pageUrl !== pageUrl;
+      if (isNewPageVisit) {
+        const key = `${effectiveTId}::${pageUrl}`;
+        setPageVisitCounters((prevCounts) => {
+          const updated = {
+            ...prevCounts,
+            [key]: (prevCounts[key] || 0) + 1,
+          };
+          try {
+            localStorage.setItem('omnipulse_page_visit_counters', JSON.stringify(updated));
+          } catch {
+            // ignore
+          }
+          return updated;
+        });
+      }
+
+      return {
+        ...prev,
+        [vId]: {
+          visitorId: vId,
+          tenantId: effectiveTId,
+          tenantSlug: effectiveTSlug,
+          companyName: effectiveCompany,
+          pageUrl,
+          pageTitle,
+          referrer: visitorData.referrer || '',
+          embedType,
+          isWidgetOpen: Boolean(visitorData.isWidgetOpen),
+          startedAt: existing ? existing.startedAt : nowMs,
+          lastSeenAt: nowMs,
+          status: visitorData.status === 'left' ? 'left' : 'online',
+        },
+      };
+    });
+  };
+
+  // Compute active company's live visitors and page visit summaries
+  const liveVisitors: LivePageVisitor[] = (Object.values(allVisitors) as LivePageVisitor[])
+    .filter((v) => {
+      const belongsToTenant =
+        v.tenantId === currentTenantId ||
+        v.tenantSlug === currentTenant?.slug ||
+        !v.tenantId;
+      const isFresh =
+        v.status === 'online' &&
+        (v.visitorId.startsWith('vis-seed-') || Date.now() - v.lastSeenAt < 60000);
+      return belongsToTenant && isFresh;
+    })
+    .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+
+  const embeddedPageVisitsMap = new Map<string, PageVisitSummary>();
+  (Object.values(allVisitors) as LivePageVisitor[]).forEach((v) => {
+    const belongsToTenant =
+      v.tenantId === currentTenantId ||
+      v.tenantSlug === currentTenant?.slug ||
+      !v.tenantId;
+    if (!belongsToTenant) return;
+
+    const isOnline =
+      v.status === 'online' &&
+      (v.visitorId.startsWith('vis-seed-') || Date.now() - v.lastSeenAt < 60000);
+    const key = `${currentTenantId}::${v.pageUrl}`;
+    const totalCount = pageVisitCounters[key] || 1;
+    const d = new Date(v.lastSeenAt);
+    const timeStr = `${String(d.getHours()).padStart(2, '0')}:${String(
+      d.getMinutes()
+    ).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+
+    const existing = embeddedPageVisitsMap.get(v.pageUrl);
+    if (existing) {
+      existing.onlineNow += isOnline ? 1 : 0;
+      existing.totalVisits = Math.max(existing.totalVisits, totalCount);
+      if (v.lastSeenAt > existing.lastSeenAt) {
+        existing.lastSeenAt = v.lastSeenAt;
+        existing.lastVisitTime = timeStr;
+      }
+    } else {
+      embeddedPageVisitsMap.set(v.pageUrl, {
+        pageUrl: v.pageUrl,
+        pageTitle: v.pageTitle,
+        tenantId: currentTenantId,
+        tenantSlug: currentTenant?.slug || '',
+        embedType: v.embedType,
+        onlineNow: isOnline ? 1 : 0,
+        totalVisits: totalCount,
+        lastVisitTime: timeStr,
+        lastSeenAt: v.lastSeenAt,
+      });
+    }
+  });
+
+  const embeddedPageVisits: PageVisitSummary[] = Array.from(
+    embeddedPageVisitsMap.values()
+  ).sort((a, b) => b.onlineNow - a.onlineNow || b.lastSeenAt - a.lastSeenAt);
+
+  const totalOnlineVisitorsCount = liveVisitors.length;
+  const totalEmbeddedPageVisitsCount = embeddedPageVisits.reduce(
+    (sum, p) => sum + p.totalVisits,
+    0
+  );
+
+  const simulateExternalPageVisit = (
+    customPageUrl?: string,
+    customPageTitle?: string,
+    embedType: 'Widget JS Flutuante' | 'Formulário HTML Puro' | 'Iframe Embed' = 'Widget JS Flutuante'
+  ) => {
+    const slug = currentTenant?.slug || 'empresa';
+    const samplePages = [
+      {
+        url: `https://${slug}.com.br/contato`,
+        title: `Página de Contato & Orçamento — ${currentTenant?.name}`,
+      },
+      {
+        url: `https://${slug}.com.br/atendimento-online`,
+        title: `Central de Atendimento WhatsApp — ${currentTenant?.name}`,
+      },
+      {
+        url: `https://${slug}.com.br/solicitar-proposta`,
+        title: `Solicitar Proposta Comercial — ${currentTenant?.name}`,
+      },
+    ];
+    const picked = samplePages[Math.floor(Math.random() * samplePages.length)];
+    const payload = {
+      visitorId: `vis-live-${Date.now().toString().slice(-5)}`,
+      tenantId: currentTenantId,
+      tenantSlug: currentTenant?.slug || '',
+      companyName: currentTenant?.name || '',
+      pageUrl: customPageUrl || picked.url,
+      pageTitle: customPageTitle || picked.title,
+      embedType,
+      isWidgetOpen: true,
+      status: 'online' as const,
+    };
+    registerIncomingVisitorHeartbeat(payload);
+    fetch('/api/webhook/visitor-heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+      body: JSON.stringify(payload),
+    }).catch(() => {});
+  };
 
   const tenantDeals = deals.filter((d) => {
     if (!d.tenantId) {
@@ -959,6 +1239,8 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           inner.message,
           inner.originChannel
         );
+      } else if (inner.type === 'OMNIPULSE_VISITOR_HEARTBEAT' && inner.visitor) {
+        registerIncomingVisitorHeartbeat(inner.visitor);
       }
     };
 
@@ -976,13 +1258,16 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         // ignore
       }
 
-      // 2. Check backend API external events
+      // 2. Check backend API external events & live visitors
       try {
         const res = await fetch('/api/webhook/external-events');
         if (res.ok) {
           const data = await res.json();
           if (data && Array.isArray(data.sessions)) {
             processExternalSessions(data.sessions);
+          }
+          if (data && Array.isArray(data.visitors)) {
+            data.visitors.forEach((v: any) => registerIncomingVisitorHeartbeat(v));
           }
         }
       } catch {
@@ -1031,6 +1316,11 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ) {
             processDirectCustomerMessage(data.sessionId, data.message);
             checkLocalAndRemoteSessions();
+          } else if (
+            data.type === 'OMNIPULSE_VISITOR_HEARTBEAT' &&
+            data.visitor
+          ) {
+            registerIncomingVisitorHeartbeat(data.visitor);
           }
         };
       }
@@ -1102,7 +1392,11 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const openQrCodeForActivation = () => {
     // Lock API & WhatsApp QR configuration: Attendants CANNOT open QR pairing
     if (currentUserRole === 'atendente') return;
-    setWhatsappConnectionState('qrcode');
+    if (currentTenant?.whatsappStatus === 'open') {
+      setWhatsappConnectionState('open');
+    } else {
+      setWhatsappConnectionState('qrcode');
+    }
     setIsQrModalOpen(true);
   };
 
@@ -1183,8 +1477,13 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return updated;
     });
 
-    // If current tenant is being updated, also sync gateway phone number & engine if changed
+    // If current tenant is being updated, also sync gateway phone number & engine & connection state if changed
     if (tenantId === currentTenantId) {
+      if (cleanedUpdates.whatsappStatus) {
+        setWhatsappConnectionState(
+          cleanedUpdates.whatsappStatus === 'open' ? 'open' : 'qrcode'
+        );
+      }
       setGatewayConfig((prev) => {
         const next = {
           ...prev,
@@ -2372,6 +2671,11 @@ export const CRMProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateWebGadgetConfig,
         isGadgetFloatingOpen,
         setIsGadgetFloatingOpen,
+        liveVisitors,
+        embeddedPageVisits,
+        totalOnlineVisitorsCount,
+        totalEmbeddedPageVisitsCount,
+        simulateExternalPageVisit,
         startChatFromGadget,
         addDepartment,
         updateDepartment,
